@@ -1,0 +1,43 @@
+# apex-ci-library sample config (used by integration test 3.8)
+app:
+  name: apex-treasury-svc
+  version: 1.0.0
+
+java:
+  tool: jdk17
+  dynamicParams:
+    flags:
+      - skipTests
+    properties:
+      maven.test.failure.ignore: "false"
+
+node:
+  tool: node20
+  cache: npm
+
+python:
+  tool: python3.11
+  cache: pip
+
+docker:
+  registry: localhost:5000
+  platforms:
+    - linux/amd64
+    - linux/arm64
+  tags:
+    - 1.0.0
+    - latest
+
+scanners:
+  enabled:
+    - sast
+    - sca
+    - container
+  severityThreshold: HIGH
+
+nexus:
+  url: http://localhost:8081
+  repositories:
+    - maven-releases
+    - npm-private
+    - pypi-hosted

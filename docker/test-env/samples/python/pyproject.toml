@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apex-sample-py"
+version = "1.0.0"
+description = "Sample Python project for apex-ci-library integration tests"
+requires-python = ">=3.7"
+
+[tool.setuptools]
+py-modules = ["apex_sample"]

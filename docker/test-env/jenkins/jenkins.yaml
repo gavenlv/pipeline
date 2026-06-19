@@ -1,0 +1,48 @@
+# Jenkins Configuration as Code for apex-ci-library module tests
+# Plugins are pre-staged by the custom entrypoint, so we don't need
+# the plugins.required block here.
+jenkins:
+  systemMessage: "Apex CI Library - module test environment"
+  numExecutors: 2
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          name: "admin"
+          password: "admin123"
+          properties:
+            - mailer:
+                emailAddress: "admin@apex.local"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  remotingSecurity:
+    enabled: true
+
+globalPipelineLibraries:
+  libraries:
+    - name: "apex-ci-library-local"
+      defaultVersion: "main"
+      implicit: true
+      allowVersionOverride: false
+      retriever:
+        fileSystem:
+          path: "/var/jenkins_home/casc_libs/apex-ci-library"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "nexus-deployer"
+              username: "deployment"
+              password: "deployment123"
+              description: "Nexus deployment user"
+          - string:
+              scope: GLOBAL
+              id: "docker-registry-creds"
+              secret: "deployment:deployment123"
+              description: "Local registry creds (user:pass)"

@@ -1,0 +1,87 @@
+# apex-ci-library integration test environment
+# Spins up:
+#   - Nexus3 (Maven/npm/PyPI/raw repos)
+#   - Local Docker registry (v2)
+#
+# Usage:
+#   docker compose -f docker/test-env/docker-compose.yml up -d
+#   bash docker/test-env/test-it.sh
+#   docker compose -f docker/test-env/docker-compose.yml down -v
+services:
+  nexus:
+    image: sonatype/nexus3:3.70.1
+    container_name: apex-test-nexus
+    hostname: nexus.local
+    ports:
+      - "8081:8081"
+    environment:
+      - NEXUS_SECURITY_RANDOMPASSWORD=false
+    volumes:
+      - nexus-data:/nexus-data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/service/rest/v1/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+  registry:
+    image: registry:2.8
+    container_name: apex-test-registry
+    hostname: registry.local
+    ports:
+      - "5000:5000"
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    volumes:
+      - registry-data:/var/lib/registry
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/v2/_catalog"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  jenkins:
+    image: jenkins/jenkins:2.462.3-lts
+        # NOTE: jenkins-plugin-cli / UC's latest version filter is broken
+        # for older LTS lines - the UC always serves the latest stable's
+        # plugin set. We work around it by downloading plugin-versions.json
+        # and resolving compatible versions client-side.
+    container_name: apex-test-jenkins
+    hostname: jenkins.local
+    user: root
+    ports:
+      - "8088:8080"
+      - "50000:50000"
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Dcasc.reload.token=apex-casc
+      - CASC_JENKINS_CONFIG=/var/jenkins_home/casc/jenkins.yaml
+    volumes:
+      - jenkins-data:/var/jenkins_home
+      # Pre-seed the global pipeline library source from host
+      - ../../vars:/var/jenkins_home/casc_libs/apex-ci-library/vars:ro
+      - ../../src:/var/jenkins_home/casc_libs/apex-ci-library/src:ro
+      - ../../resources:/var/jenkins_home/casc_libs/apex-ci-library/resources:ro
+      # JCasC config + custom entrypoint + module test pipeline
+      - ./jenkins/jenkins.yaml:/var/jenkins_home/casc/jenkins.yaml:ro
+      - ./jenkins/apex-entrypoint.sh:/usr/local/bin/apex-entrypoint.sh:ro
+      - ./jenkins/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
+      - ./jenkins/Jenkinsfile-modules:/var/jenkins_home/Jenkinsfile-modules:ro
+      - ../../build/test-it-logs:/var/jenkins_home/test-it-logs:ro
+      # Docker socket so Jenkins can buildx build
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/usr/local/bin/apex-entrypoint.sh"]
+    depends_on:
+      nexus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/login", "-o", "/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
+
+volumes:
+  nexus-data:
+  registry-data:
+  jenkins-data:
