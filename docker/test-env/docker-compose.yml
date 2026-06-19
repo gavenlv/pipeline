@@ -43,10 +43,6 @@ services:
 
   jenkins:
     image: jenkins/jenkins:2.462.3-lts
-        # NOTE: jenkins-plugin-cli / UC's latest version filter is broken
-        # for older LTS lines - the UC always serves the latest stable's
-        # plugin set. We work around it by downloading plugin-versions.json
-        # and resolving compatible versions client-side.
     container_name: apex-test-jenkins
     hostname: jenkins.local
     user: root
@@ -67,6 +63,7 @@ services:
       - ./jenkins/apex-entrypoint.sh:/usr/local/bin/apex-entrypoint.sh:ro
       - ./jenkins/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
       - ./jenkins/Jenkinsfile-modules:/var/jenkins_home/Jenkinsfile-modules:ro
+      - ./jenkins/plugin-urls.tsv:/var/jenkins_home/casc/plugin-urls.tsv:ro
       - ../../build/test-it-logs:/var/jenkins_home/test-it-logs:ro
       # Docker socket so Jenkins can buildx build
       - /var/run/docker.sock:/var/run/docker.sock
