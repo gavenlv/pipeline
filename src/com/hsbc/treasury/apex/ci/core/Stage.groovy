@@ -44,8 +44,8 @@ class Stage implements Serializable {
     int size() { steps.size() }
 
     List<Step> getSteps() { return steps }
-    boolean isParallel() { return parallel }
-    boolean isFailFast() { return failFast }
+    boolean getParallel() { return parallel }
+    boolean getFailFast() { return failFast }
 
     /** 在给定的 script 上真正执行（沙箱安全） */
     void execute(PipelineContext ctx) {
