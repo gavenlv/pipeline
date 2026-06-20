@@ -39,16 +39,18 @@ class DynamicParams implements Serializable {
     }
 
     /** 拷贝 + 修改 */
-    DynamicParams copyWith(Closure body) {
+    DynamicParams copyWith(Closure body = null) {
         def c = new DynamicParams(
             flags: new ArrayList(this.flags),
             props: new LinkedHashMap(this.props),
             positionals: new ArrayList(this.positionals),
             extras: new LinkedHashMap(this.extras)
         )
-        body.delegate = c
-        body.resolveStrategy = Closure.DELEGATE_FIRST
-        body()
+        if (body != null) {
+            body.delegate = c
+            body.resolveStrategy = Closure.DELEGATE_FIRST
+            body()
+        }
         return c
     }
 
