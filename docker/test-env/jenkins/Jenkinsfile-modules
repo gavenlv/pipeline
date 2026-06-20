@@ -13,7 +13,9 @@
 import com.hsbc.treasury.apex.ci.config.LibraryConfig
 import com.hsbc.treasury.apex.ci.core.DynamicParams
 import com.hsbc.treasury.apex.ci.core.Stage
+import com.hsbc.treasury.apex.ci.core.StageSpec
 import com.hsbc.treasury.apex.ci.core.Pipeline
+import com.hsbc.treasury.apex.ci.core.PipelineContext
 import com.hsbc.treasury.apex.ci.scanners.ScannerCollector
 import com.hsbc.treasury.apex.ci.scanners.ScanResult
 import com.hsbc.treasury.apex.ci.docker.DockerBuildConfig
@@ -141,7 +143,7 @@ node {
         Pipeline p = Pipeline.builder()
             .name('parallel-test')
             .withFailFast(true)
-            .stage('fanout') { Stage.StageSpec s ->
+            .stage('fanout') { StageSpec s ->
                 s.parallel(true)
                 s.step('left',  { c -> echo 'left ran'  })
                 s.step('right', { c -> echo 'right ran' })

@@ -11,6 +11,7 @@ import com.hsbc.treasury.apex.ci.scanners.ScannerCollector
 import com.hsbc.treasury.apex.ci.core.PipelineContext
 import com.hsbc.treasury.apex.ci.core.Stage
 import com.hsbc.treasury.apex.ci.core.LambdaStep
+import com.hsbc.treasury.apex.ci.core.CollectedResult
 import com.hsbc.treasury.apex.ci.errors.ApexCIException
 import com.hsbc.treasury.apex.ci.reporters.ConsoleReporter
 
