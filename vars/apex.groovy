@@ -9,8 +9,11 @@
 // 沙箱安全：本文件不使用 Groovy eval，所有动态逻辑走配置对象。
 // =========================================================================
 import com.hsbc.treasury.apex.ci.core.Pipeline
+import com.hsbc.treasury.apex.ci.core.PipelineBuilder
 import com.hsbc.treasury.apex.ci.core.PipelineContext
 import com.hsbc.treasury.apex.ci.core.Stage
+import com.hsbc.treasury.apex.ci.core.StageSpec
+import com.hsbc.treasury.apex.ci.core.CollectedResult
 import com.hsbc.treasury.apex.ci.core.Retry
 import com.hsbc.treasury.apex.ci.core.LambdaStep
 import com.hsbc.treasury.apex.ci.config.LibraryConfig
@@ -45,7 +48,7 @@ def call(Map args = [:], Closure body) {
     script.binding?.setVariable('apexCtx', ctx)
     script.binding?.setVariable('apexPipeline', null) // 稍后回填
 
-    Pipeline.Builder pb = Pipeline.builder()
+    PipelineBuilder pb = Pipeline.builder()
             .name(name)
             .description(description)
             .withFailFast(failFast)
@@ -64,10 +67,10 @@ def call(Map args = [:], Closure body) {
 /** apex { } 闭包的 delegate：提供 stage / java / node / python / scanner / containerBuild / publish / docker 入口 */
 class ApexSpec implements Serializable {
     private static final long serialVersionUID = 1L
-    final Pipeline.Builder pb
+    final PipelineBuilder pb
     final PipelineContext ctx
     final Object script
-    ApexSpec(Pipeline.Builder pb, PipelineContext ctx, Object script) {
+    ApexSpec(PipelineBuilder pb, PipelineContext ctx, Object script) {
         this.pb = pb
         this.ctx = ctx
         this.script = script
@@ -78,35 +81,35 @@ class ApexSpec implements Serializable {
 
     void java(Closure body) {
         // 将 java { } 配置阶段注册为 LambdaStep，body 解析时调用 JavaBuilder.execute
-        pb.stage('Build-Java', { Stage.StageSpec s ->
+        pb.stage('Build-Java', { StageSpec s ->
             s.step('java-build', { PipelineContext c ->
                 new JavaBuilder().execute(c, body)
             })
         })
     }
     void node(Closure body) {
-        pb.stage('Build-Node', { Stage.StageSpec s ->
+        pb.stage('Build-Node', { StageSpec s ->
             s.step('node-build', { PipelineContext c ->
                 new NodeBuilder().execute(c, body)
             })
         })
     }
     void python(Closure body) {
-        pb.stage('Build-Python', { Stage.StageSpec s ->
+        pb.stage('Build-Python', { StageSpec s ->
             s.step('python-build', { PipelineContext c ->
                 new PythonBuilder().execute(c, body)
             })
         })
     }
     void go(Closure body) {
-        pb.stage('Build-Go', { Stage.StageSpec s ->
+        pb.stage('Build-Go', { StageSpec s ->
             s.step('go-build', { PipelineContext c ->
                 new GoBuilder().execute(c, body)
             })
         })
     }
     void shell(Closure body) {
-        pb.stage('Build-Shell', { Stage.StageSpec s ->
+        pb.stage('Build-Shell', { StageSpec s ->
             s.step('shell-build', { PipelineContext c ->
                 new ShellBuilder().execute(c, body)
             })
@@ -120,13 +123,13 @@ class ApexSpec implements Serializable {
         body.delegate = sc
         body.resolveStrategy = Closure.DELEGATE_FIRST
         body()
-        pb.stage('Security-Scans', { Stage.StageSpec s ->
+        pb.stage('Security-Scans', { StageSpec s ->
             s.step('scanner-run', { PipelineContext c -> sc.run(c) })
         })
-        pb.stage('Security-Gates', { Stage.StageSpec sg ->
+        pb.stage('Security-Gates', { StageSpec sg ->
             sg.step('scanner-gates', { PipelineContext c ->
                 // 在同一阶段里收集并 gate
-                List<com.hsbc.treasury.apex.ci.core.AsyncCollector.CollectedResult<com.hsbc.treasury.apex.ci.scanners.ScanResult>> results = sc.run(c)
+                List<CollectedResult<com.hsbc.treasury.apex.ci.scanners.ScanResult>> results = sc.run(c)
                 sc.assertPassed(results)
                 List<com.hsbc.treasury.apex.ci.scanners.ScanResult> values = results.findAll { it.status == 'OK' }.collect { it.value }
                 new ConsoleReporter().reportScan(c, values)
@@ -137,7 +140,7 @@ class ApexSpec implements Serializable {
 
     /** containerBuild 入口 */
     void containerBuild(String imageRef, Closure body) {
-        pb.stage('Container-Build', { Stage.StageSpec s ->
+        pb.stage('Container-Build', { StageSpec s ->
             s.step('docker-build', { PipelineContext c ->
                 new DockerBuilder().build(c, imageRef, body)
             })
@@ -145,7 +148,7 @@ class ApexSpec implements Serializable {
     }
 
     void containerPush(String imageRef, String credentialsId = null) {
-        pb.stage('Container-Push', { Stage.StageSpec s ->
+        pb.stage('Container-Push', { StageSpec s ->
             s.step('docker-push', { PipelineContext c ->
                 new DockerPusher().push(c, imageRef, credentialsId)
             })
@@ -156,7 +159,7 @@ class ApexSpec implements Serializable {
     void publish(String baseUrl, String repository, String format, Closure body) {
         NexusClient client = NexusClient.of(baseUrl, repository, format, null)
         ArtifactPublisher publisher = new ArtifactPublisher(client)
-        pb.stage('Publish-' + format, { Stage.StageSpec s ->
+        pb.stage('Publish-' + format, { StageSpec s ->
             s.step('nexus-publish', { PipelineContext c ->
                 body.delegate = publisher
                 body.resolveStrategy = Closure.DELEGATE_FIRST
@@ -167,7 +170,7 @@ class ApexSpec implements Serializable {
 
     /** 通用 step（完全自由） */
     void step(String name, Closure body) {
-        pb.stage('Custom', { Stage.StageSpec s ->
+        pb.stage('Custom', { StageSpec s ->
             s.step(name, { PipelineContext c -> body(c) })
         })
     }

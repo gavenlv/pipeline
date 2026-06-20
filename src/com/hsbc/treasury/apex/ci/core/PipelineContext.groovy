@@ -26,7 +26,7 @@ class PipelineContext implements Serializable {
     final String nodeLabel
     final long startedAt
 
-    private PipelineContext(Builder b) {
+    private PipelineContext(PipelineContextBuilder b) {
         this.script = b.script
         String resolvedWork = b.workDir
         if (resolvedWork == null && b.script != null) {
@@ -45,7 +45,7 @@ class PipelineContext implements Serializable {
         this.startedAt = System.currentTimeMillis()
     }
 
-    static Builder builder() { new Builder() }
+    static PipelineContextBuilder builder() { new PipelineContextBuilder() }
 
     /** 业务方在 stage 之间传值 */
     void setAttr(String k, Object v) { attrs.put(k, v) }
@@ -58,7 +58,7 @@ class PipelineContext implements Serializable {
         def merged = new LinkedHashMap<String, String>()
         merged.putAll(this.env)
         merged.putAll(more ?: [:])
-        Builder b = builder()
+        PipelineContextBuilder b = builder()
         b.script = this.script
         b.workDir = this.workDir
         b.env = merged
@@ -67,25 +67,5 @@ class PipelineContext implements Serializable {
         b.sleeper = this.sleeper
         b.nodeLabel = this.nodeLabel
         return b.build()
-    }
-
-    static class Builder implements Serializable {
-        private static final long serialVersionUID = 1L
-        Object script
-        String workDir
-        Map<String, String> env = [:]
-        Map<String, Object> params = [:]
-        Map<String, Object> attrs = [:]
-        Sleeper sleeper
-        String nodeLabel
-
-        Builder script(Object s)        { this.script = s; return this }
-        Builder workDir(String d)       { this.workDir = d; return this }
-        Builder env(Map<String, String> e) { this.env = e; return this }
-        Builder params(Map<String, Object> p) { this.params = p; return this }
-        Builder attrs(Map<String, Object> a)  { this.attrs = a; return this }
-        Builder sleeper(Sleeper s)      { this.sleeper = s; return this }
-        Builder nodeLabel(String l)     { this.nodeLabel = l; return this }
-        PipelineContext build()         { return new PipelineContext(this) }
     }
 }

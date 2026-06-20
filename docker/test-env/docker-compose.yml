@@ -50,8 +50,7 @@ services:
       - "8088:8080"
       - "50000:50000"
     environment:
-      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Dcasc.reload.token=apex-casc
-      - CASC_JENKINS_CONFIG=/var/jenkins_home/casc/jenkins.yaml
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
     dns:
       - 8.8.8.8
       - 1.1.1.1

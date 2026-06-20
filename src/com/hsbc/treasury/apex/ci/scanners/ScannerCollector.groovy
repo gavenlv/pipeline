@@ -3,6 +3,7 @@ package com.hsbc.treasury.apex.ci.scanners
 import com.hsbc.treasury.apex.ci.core.PipelineContext
 import com.hsbc.treasury.apex.ci.core.AsyncResult
 import com.hsbc.treasury.apex.ci.core.AsyncCollector
+import com.hsbc.treasury.apex.ci.core.CollectedResult
 import com.hsbc.treasury.apex.ci.errors.ApexCIException
 
 import java.util.concurrent.Callable
@@ -42,7 +43,7 @@ class ScannerCollector implements Serializable {
         entries << [type: type, name: name, body: body]
     }
 
-    List<AsyncCollector.CollectedResult<ScanResult>> run(PipelineContext ctx) {
+    List<CollectedResult<ScanResult>> run(PipelineContext ctx) {
         if (entries.isEmpty()) return []
         List<AsyncResult<ScanResult>> tasks = []
         for (Map<String, Object> e : entries) {
@@ -59,9 +60,9 @@ class ScannerCollector implements Serializable {
     }
 
     /** 收集后统一判断：failOn 中任一严重度非零 → 抛错 */
-    void assertPassed(List<AsyncCollector.CollectedResult<ScanResult>> results) {
+    void assertPassed(List<CollectedResult<ScanResult>> results) {
         List<String> failed = []
-        for (AsyncCollector.CollectedResult<ScanResult> r : results) {
+        for (CollectedResult<ScanResult> r : results) {
             if (r.status == 'FAILED' || r.status == 'TIMEOUT') {
                 failed << "${r.name}:${r.status}:${r.error?.message}".toString()
                 continue

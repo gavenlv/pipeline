@@ -16,18 +16,6 @@ import com.hsbc.treasury.apex.ci.errors.ApexCIException
 class AsyncCollector implements Serializable {
     private static final long serialVersionUID = 1L
 
-    static class CollectedResult<T> implements Serializable {
-        private static final long serialVersionUID = 1L
-        String name
-        String status          // OK | FAILED | TIMEOUT
-        T value
-        Throwable error
-        long elapsedMs
-
-        @Override
-        String toString() { "${name}=${status}(${elapsedMs}ms)" }
-    }
-
     /** 等待所有结果全部完成（或失败） */
     static <T> List<CollectedResult<T>> awaitAll(List<AsyncResult<T>> tasks, long totalTimeoutMs = -1L) {
         List<CollectedResult<T>> out = new ArrayList<>(tasks.size())

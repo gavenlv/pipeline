@@ -21,14 +21,14 @@ class Pipeline implements Serializable {
     private boolean failFast = true
     private String description
 
-    private Pipeline(Builder b) {
+    private Pipeline(PipelineBuilder b) {
         this.name = b.name ?: 'apex-pipeline'
         this.failFast = b.failFast
         this.description = b.description
         this.stages.addAll(b.stages)
     }
 
-    static Builder builder() { return new Builder() }
+    static PipelineBuilder builder() { return new PipelineBuilder() }
 
     void run(PipelineContext ctx) {
         long t0 = System.currentTimeMillis()
@@ -54,27 +54,4 @@ class Pipeline implements Serializable {
     }
 
     List<String> stageNames() { stages.collect { it.name } }
-
-    static class Builder implements Serializable {
-        private static final long serialVersionUID = 1L
-        String name
-        String description
-        boolean failFast = true
-        List<Stage> stages = []
-
-        Builder name(String n)              { this.name = n; return this }
-        Builder description(String d)       { this.description = d; return this }
-        Builder withFailFast(boolean f)     { this.failFast = f; return this }
-
-        Builder stage(String name, Closure body) {
-            Stage s = new Stage(name)
-            body.delegate = new Stage.StageSpec(s)
-            body.resolveStrategy = Closure.DELEGATE_FIRST
-            body.call(s)
-            this.stages << s
-            return this
-        }
-
-        Pipeline build() { return new Pipeline(this) }
-    }
 }
