@@ -54,4 +54,8 @@ class Pipeline implements Serializable {
     }
 
     List<String> stageNames() { stages.collect { it.name } }
+
+    List<Stage> getStages() { return stages }
+    boolean isFailFast() { return failFast }
+    String getDescription() { return description }
 }
