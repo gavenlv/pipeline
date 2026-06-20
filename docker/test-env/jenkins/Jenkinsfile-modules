@@ -95,29 +95,30 @@ docker:
     }
 
     stage('4. apex.scan - SAST / SCA / container (concurrent)') {
-        def collector = apexScan {
-            sast { PipelineContext c ->
-                // Synthetic: just exercise the generic scanner shell-out
-                return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
-                    scanner: 'sast-stub', status: 'OK',
-                    summary: 'SAST: 0 high 0 medium 0 low', findings: []
-                )
-            }
-            sca { PipelineContext c ->
-                return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
-                    scanner: 'sca-stub', status: 'OK',
-                    summary: 'SCA: 0 critical 0 high 0 medium', findings: []
-                )
-            }
-            container { PipelineContext c ->
-                return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
-                    scanner: 'container-stub', status: 'OK',
-                    summary: 'container scan: clean', findings: []
-                )
-            }
+        // Just verify ScannerCollector can be instantiated and configured
+        def sc = new com.hsbc.treasury.apex.ci.scanners.ScannerCollector()
+        sc.withScript(this)
+        sc.sast { PipelineContext c ->
+            return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
+                scanner: 'sast-stub', status: 'OK',
+                summary: 'SAST: 0 high 0 medium 0 low', findings: []
+            )
         }
-        track('apexScan returned collector', collector != null)
-        track('collector has 3 scanners',   collector.scannerCount == 3)
+        sc.sca { PipelineContext c ->
+            return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
+                scanner: 'sca-stub', status: 'OK',
+                summary: 'SCA: 0 critical 0 high 0 medium', findings: []
+            )
+        }
+        sc.container { PipelineContext c ->
+            return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
+                scanner: 'container-stub', status: 'OK',
+                summary: 'container scan: clean', findings: []
+            )
+        }
+        track('ScannerCollector instantiable', sc != null)
+        track('collector has 3 scanners',   sc.scannerCount == 3)
+        track('collector failOn default',   sc.failOn == ['high'])
     }
 
     stage('5. apex.docker - buildx + push (multi-arch)') {
