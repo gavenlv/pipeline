@@ -95,21 +95,21 @@ docker:
     }
 
     stage('4. apex.scan - SAST / SCA / container (concurrent)') {
-        def collector = apexScan { scanners ->
-            scanners.sast { PipelineContext c ->
+        def collector = apexScan {
+            sast { PipelineContext c ->
                 // Synthetic: just exercise the generic scanner shell-out
                 return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
                     scanner: 'sast-stub', status: 'OK',
                     summary: 'SAST: 0 high 0 medium 0 low', findings: []
                 )
             }
-            scanners.sca { PipelineContext c ->
+            sca { PipelineContext c ->
                 return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
                     scanner: 'sca-stub', status: 'OK',
                     summary: 'SCA: 0 critical 0 high 0 medium', findings: []
                 )
             }
-            scanners.container { PipelineContext c ->
+            container { PipelineContext c ->
                 return new com.hsbc.treasury.apex.ci.scanners.ScanResult(
                     scanner: 'container-stub', status: 'OK',
                     summary: 'container scan: clean', findings: []
