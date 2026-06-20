@@ -43,6 +43,8 @@ class ScannerCollector implements Serializable {
         entries << [type: type, name: name, body: body]
     }
 
+    int getScannerCount() { return entries.size() }
+
     List<CollectedResult<ScanResult>> run(PipelineContext ctx) {
         if (entries.isEmpty()) return []
         List<AsyncResult<ScanResult>> tasks = []
