@@ -76,7 +76,7 @@ docker:
         p.removeFlag('--batch-mode')
         track('params.removeFlag',     !p.flags.contains('--batch-mode'))
         // copyWith
-        def q = p.copyWith().positional('install')
+        def q = p.copyWith().addPositional('install')
         track('params.copyWith',       q.positionals == ['clean', 'package', 'install'])
     }
 

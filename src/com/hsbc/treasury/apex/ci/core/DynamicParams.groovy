@@ -24,6 +24,12 @@ class DynamicParams implements Serializable {
     void positional(String p)  { positionals << p }
     void extra(String k, Object v) { extras[k] = v }
 
+    /** 链式调用版本 */
+    DynamicParams addFlag(String f) { flags << f; return this }
+    DynamicParams addProperty(String k, String v) { props[k] = v; return this }
+    DynamicParams addPositional(String p) { positionals << p; return this }
+    DynamicParams addExtra(String k, Object v) { extras[k] = v; return this }
+
     void removeFlag(String f)        { flags.removeAll { it == f } }
     void removeProperty(String k)    { props.remove(k) }
     void removePositional(String p)  { positionals.removeAll { it == p } }
