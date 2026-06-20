@@ -84,10 +84,8 @@ class AsyncResult<T> implements Serializable {
 
     /** 工厂方法：接受闭包，自动转 Callable */
     static <T> AsyncResult<T> start(String name, Closure<T> body) {
-        return start(name, new Callable<T>() {
-            @Override
-            T call() { return body.call() }
-        })
+        Callable<T> callable = new ClosureCallable<T>(body)
+        return start(name, callable)
     }
 
     /** 工厂方法：直接接受 Callable */
