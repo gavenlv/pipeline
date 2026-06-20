@@ -69,9 +69,9 @@ docker:
         p.positional('clean')
         p.positional('package')
         track('params.flags',          p.flags == ['--batch-mode', '-DskipTests'])
-        track('params.properties',     p.properties == ['maven.javadoc.skip': 'true'])
+        track('params.properties',     p.props == ['maven.javadoc.skip': 'true'])
         track('params.positionals',    p.positionals == ['clean', 'package'])
-        track('params.asArgList()',    p.asArgList() == ['--batch-mode', '-DskipTests', '-Dmaven.javadoc.skip=true', 'clean', 'package'])
+        track('params.asFlagList()',   p.asFlagList() == ['--batch-mode', '-DskipTests', 'maven.javadoc.skip=true', 'clean', 'package'])
         // mutate: remove a flag
         p.removeFlag('--batch-mode')
         track('params.removeFlag',     !p.flags.contains('--batch-mode'))
