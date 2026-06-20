@@ -136,16 +136,16 @@ docker:
 
     stage('6. apex.publish - Nexus client') {
         NexusClient client = NexusClient.of('http://nexus:8081', 'maven-releases', 'maven2', 'nexus-deployer')
-        track('nexus client name',          client.repoName == 'maven-releases')
+        track('nexus client repository',   client.repository == 'maven-releases')
         track('nexus client format',        client.format == 'maven2')
         track('nexus client baseUrl',       client.baseUrl == 'http://nexus:8081')
     }
 
     stage('7. apex.retry - transient failure recovery') {
         // Verify Retry helper compiles; full retry test is in JUnit suite.
-        def r = new com.hsbc.treasury.apex.ci.core.Retry(maxAttempts: 3, backoffMs: 10)
-        track('retry config maxAttempts',  r.maxAttempts == 3)
-        track('retry config backoffMs',    r.backoffMs == 10)
+        def r = new com.hsbc.treasury.apex.ci.core.Retry(maxAttempts: 3, initialDelayMs: 10)
+        track('retry config maxAttempts',   r.maxAttempts == 3)
+        track('retry config initialDelayMs', r.initialDelayMs == 10L)
     }
 
     stage('8. apex.notify - email notifier') {
@@ -160,10 +160,9 @@ docker:
         Pipeline p = Pipeline.builder()
             .name('parallel-test')
             .withFailFast(true)
-            .stage('fanout') { StageSpec s ->
-                s.parallel(true)
-                s.step('left',  { c -> echo 'left ran'  })
-                s.step('right', { c -> echo 'right ran' })
+            .stage('fanout') {
+                step('left',  { c -> echo 'left ran'  })
+                step('right', { c -> echo 'right ran' })
             }
             .build()
         p.run(testCtx)
