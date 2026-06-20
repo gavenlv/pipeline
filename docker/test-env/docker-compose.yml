@@ -42,7 +42,7 @@ services:
       retries: 10
 
   jenkins:
-    image: jenkins/jenkins:2.462.3-lts
+    image: jenkins/jenkins:lts
     container_name: apex-test-jenkins
     hostname: jenkins.local
     user: root
@@ -52,6 +52,9 @@ services:
     environment:
       - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Dcasc.reload.token=apex-casc
       - CASC_JENKINS_CONFIG=/var/jenkins_home/casc/jenkins.yaml
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       - jenkins-data:/var/jenkins_home
       # Pre-seed the global pipeline library source from host
@@ -63,7 +66,6 @@ services:
       - ./jenkins/apex-entrypoint.sh:/usr/local/bin/apex-entrypoint.sh:ro
       - ./jenkins/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
       - ./jenkins/Jenkinsfile-modules:/var/jenkins_home/Jenkinsfile-modules:ro
-      - ./jenkins/plugin-urls.tsv:/var/jenkins_home/casc/plugin-urls.tsv:ro
       - ../../build/test-it-logs:/var/jenkins_home/test-it-logs:ro
       # Docker socket so Jenkins can buildx build
       - /var/run/docker.sock:/var/run/docker.sock
