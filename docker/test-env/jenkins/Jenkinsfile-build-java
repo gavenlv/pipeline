@@ -1,0 +1,113 @@
+// =========================================================================
+// Jenkinsfile-build-java — 单一类型 build 场景
+//
+// 目标：验证 apexBuild 在 Jenkinsfile 中对单语言（Java/Maven）的端到端能力
+//   - 通过 apexBuild('java') DSL 触发 Maven 编译 / 测试 / 打包
+//   - 验证产出 jar 存在并能读取 version
+//
+// 用法：
+//   该文件被 01-seed.groovy 注册为 "apex-build-java" 任务，
+//   启动 Jenkins 后会自动触发；也可手动 Build Now。
+//
+// 路径说明：使用 /var/jenkins_home/pipeline 作为仓库根（CpsFlowDefinition
+//   无 checkout scm，需要预先将仓库挂入容器）。
+// =========================================================================
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 20, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(name: 'MVN_GOALS',     defaultValue: 'clean verify', description: 'Maven goals to run')
+        string(name: 'SAMPLE_DIR',    defaultValue: 'docker/test-env/samples/java', description: 'Java sample directory (relative to pipeline root)')
+        string(name: 'BUMP_TYPE',     defaultValue: 'patch',  description: 'version bump (patch|minor|major|release|prerelease)')
+    }
+
+    environment {
+        PIPELINE_ROOT = '/var/jenkins_home/pipeline'
+        BUILD_VERSION = '1.2.3'
+        BUILD_META    = 'jenkins-build'
+    }
+
+    stages {
+        stage('Precheck') {
+            steps {
+                script {
+                    String abs = "${env.PIPELINE_ROOT}/${params.SAMPLE_DIR}".toString()
+                    if (!fileExists(abs + '/pom.xml')) {
+                        error "Sample not found: ${abs}/pom.xml"
+                    }
+                    echo "Java sample located at ${abs}".toString()
+                }
+            }
+        }
+
+        stage('Compute Version') {
+            steps {
+                script {
+                    String v
+                    // 显式把 BUILD_VERSION/BUMP_TYPE/BUILD_META 传给 apexVersion.auto()，
+                    // 避免依赖 script.binding 这种 CPS 沙箱下不可靠的方式。
+                    v = apexVersion.auto([
+                        BUILD_VERSION: env.BUILD_VERSION,
+                        BUMP_TYPE    : params.BUMP_TYPE,
+                        BUILD_META   : env.BUILD_META,
+                    ])
+                    env.APP_VERSION = v
+                    echo "Resolved APP_VERSION=${env.APP_VERSION}".toString()
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                // 在 apex { } 闭包外部先把 Jenkinsfile 的 params 抓住，
+                // 避免在 builder config 的 closure 中 `params.X` 被误解析为 cfg.params (DynamicParams)。
+                String goals = params.MVN_GOALS
+                dir("${env.PIPELINE_ROOT}/${params.SAMPLE_DIR}".toString()) {
+                    script {
+                        apex {
+                            apexBuild('java') {
+                                jdk        = 11
+                                buildTool  = 'maven'
+                                goals      = goals.split('\\s+') as List
+                                params {
+                                    flag('--batch-mode')
+                                    flag('-DskipITs')
+                                    property('maven.javadoc.skip', 'true')
+                                    property('project.build.outputTimestamp', '1970-01-01T00:00:00Z')
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Verify Artifact') {
+            steps {
+                script {
+                    String jar = "${env.PIPELINE_ROOT}/${params.SAMPLE_DIR}/target/demo.jar".toString()
+                    if (!fileExists(jar)) {
+                        error "Expected jar not produced: ${jar}"
+                    }
+                    long size = new File(jar).length()
+                    echo "Build OK: ${jar} (${size} bytes), version=${env.APP_VERSION}".toString()
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'docker/test-env/samples/java/target/**',
+                             allowEmptyArchive: true,
+                             fingerprint: false
+        }
+    }
+}

@@ -22,14 +22,10 @@ class GoBuilder extends AbstractBuilder implements Serializable {
     Object parseConfig(Closure body) { return GoBuildConfig.fromClosure(body) }
 
     @Override
-    Object execute(PipelineContext ctx) {
-        throw new BuildException("Use execute(ctx, body).")
-    }
-
-    Object execute(PipelineContext ctx, Closure body) {
+    Object execute(PipelineContext ctx, Closure body, Map opts = [:]) {
         GoBuildConfig cfg = (GoBuildConfig) parseConfig(body)
         validate(cfg)
-        ctx.script?.echo("==> [Go] v=${cfg.goVersion} commands=${cfg.commands}")
+        ctx?.log("==> [Go] v=${cfg.goVersion} commands=${cfg.commands}")
 
         List<String> cmd = ['go']
         cfg.commands.each { c ->
@@ -41,7 +37,7 @@ class GoBuilder extends AbstractBuilder implements Serializable {
         cmd = platformAdapt(cmd, ctx)
 
         com.hsbc.treasury.apex.ci.utils.Sandbox.runShell(ctx, cmd, "go".toString())
-        ctx.setAttr("go.build.module", cfg.moduleName)
+        ctx?.setAttr("go.build.module", cfg.moduleName)
         return ['module': cfg.moduleName, 'commands': cfg.commands]
     }
 

@@ -57,7 +57,7 @@ class JavaBuilderTest {
         new JavaBuilder().execute(ctx, {
             buildTool = 'maven'
             goals = ['clean', 'package']
-        })
+        }, [:])
         Assert.assertTrue(s.shCalls.size() >= 1)
         String script = s.shCalls[0].script as String
         Assert.assertTrue(script.contains('mvn'))

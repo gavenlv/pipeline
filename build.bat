@@ -73,22 +73,28 @@ if "%TARGET%"=="compile-main" goto :end
 echo ==^> Running tests...
 java -cp "%CP%;build\classes\main;build\classes\test" org.junit.runner.JUnitCore %JUNIT_CORE_OPTS% ^
     com.hsbc.treasury.apex.ci.config.LibraryConfigTest ^
-    com.hsbc.treasury.apex.ci.core.PipelineTest ^
-    com.hsbc.treasury.apex.ci.core.StageTest ^
     com.hsbc.treasury.apex.ci.core.RetryTest ^
     com.hsbc.treasury.apex.ci.core.DynamicParamsTest ^
     com.hsbc.treasury.apex.ci.core.PipelineContextTest ^
-    com.hsbc.treasury.apex.ci.core.AsyncCollectorTest ^
     com.hsbc.treasury.apex.ci.builders.JavaBuilderTest ^
+    com.hsbc.treasury.apex.ci.builders.JavaBuilderTestEx ^
     com.hsbc.treasury.apex.ci.builders.NodeBuilderTest ^
     com.hsbc.treasury.apex.ci.builders.PythonBuilderTest ^
+    com.hsbc.treasury.apex.ci.builders.GoBuilderTest ^
     com.hsbc.treasury.apex.ci.builders.ShellBuilderTest ^
-    com.hsbc.treasury.apex.ci.scanners.ScannerCollectorTest ^
-    com.hsbc.treasury.apex.ci.scanners.SastScannerTest ^
-    com.hsbc.treasury.apex.ci.scanners.ContainerScannerTest ^
+    com.hsbc.treasury.apex.ci.builders.BuilderFactoryTest ^
+    com.hsbc.treasury.apex.ci.scanners.ScanRunnerTest ^
     com.hsbc.treasury.apex.ci.docker.DockerBuilderTest ^
+    com.hsbc.treasury.apex.ci.docker.DockerPusherTest ^
     com.hsbc.treasury.apex.ci.artifact.NexusClientTest ^
-    com.hsbc.treasury.apex.ci.artifact.ArtifactPublisherTest
+    com.hsbc.treasury.apex.ci.utils.SandboxTest ^
+    com.hsbc.treasury.apex.ci.utils.UtilTest ^
+    com.hsbc.treasury.apex.ci.version.SemVerTest ^
+    com.hsbc.treasury.apex.ci.version.VersionManagerTest ^
+    com.hsbc.treasury.apex.ci.integration.LightweightDslTest ^
+    com.hsbc.treasury.apex.ci.integration.ParallelBuildTest ^
+    com.hsbc.treasury.apex.ci.integration.ScanWaitIntegrationTest ^
+    com.hsbc.treasury.apex.ci.integration.VersionUpgradeIntegrationTest
 
 :end
 endlocal

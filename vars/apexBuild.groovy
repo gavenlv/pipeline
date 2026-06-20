@@ -1,31 +1,51 @@
 // =========================================================================
-// apexBuild — 独立构建入口（无需 apex { } 包装）
+// apexBuild — 多语言构建入口（轻量版）
 //
-//   apexBuild(java) { jdk = 21; goals = ['clean','package'] }
-//   apexBuild('node') { scripts = ['install','build','test'] }
+//   stage('Build') {
+//       apexBuild('java') {
+//           jdk = 17
+//           buildTool = 'maven'           // maven | gradle
+//           goals = ['clean', 'package']
+//           params {                     // DynamicParams：动态参数
+//               flag('--batch-mode')
+//               property('maven.javadoc.skip', 'true')
+//               positional('install')
+//           }
+//       }
+//   }
+//
+//   apexBuild('node') { packageManager = 'npm'; scripts = ['install','test'] }
+//   apexBuild('python') { venv = false; requirements = ['six'] }
+//   apexBuild('go') { main = './cmd/app'; targets = ['build','test'] }
+//   apexBuild() { /* 等价于 autoDetect */ }
+//   apexBuild('java', shellStyle: 'string') { ... }   // 走原生 sh 字符串
 // =========================================================================
-import com.hsbc.treasury.apex.ci.builders.JavaBuilder
-import com.hsbc.treasury.apex.ci.builders.NodeBuilder
-import com.hsbc.treasury.apex.ci.builders.PythonBuilder
-import com.hsbc.treasury.apex.ci.builders.GoBuilder
-import com.hsbc.treasury.apex.ci.builders.ShellBuilder
 import com.hsbc.treasury.apex.ci.builders.BuilderFactory
 import com.hsbc.treasury.apex.ci.core.PipelineContext
 
-def call(String language, Closure body) {
+def call(String language, Map opts, Closure body) {
     Object script = this
     PipelineContext ctx = script.binding?.hasVariable('apexCtx') ? script.apexCtx :
         PipelineContext.builder().script(script).build()
-    def builder = BuilderFactory.of(language)
-    return builder.execute(ctx, body)
+    BuilderFactory.of(language).execute(ctx, body, opts)
+    return null
 }
 
-def call(Object ignored, Closure body) {
-    // 兼容 apexBuild(java) { ... } 这种语法糖
+def call(String language, Closure body) {
+    call(language, [:], body)
+}
+
+def call(Map opts, Closure body) {
     Object script = this
     PipelineContext ctx = script.binding?.hasVariable('apexCtx') ? script.apexCtx :
         PipelineContext.builder().script(script).build()
-    return new JavaBuilder().execute(ctx, body)
+    String lang = BuilderFactory.autoDetect(new File(ctx.workDir ?: '.'))
+    BuilderFactory.of(lang).execute(ctx, body, opts)
+    return null
+}
+
+def call(Closure body) {
+    call([:], body)
 }
 
 return this

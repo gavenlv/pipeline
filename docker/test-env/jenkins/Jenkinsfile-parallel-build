@@ -1,0 +1,161 @@
+// =========================================================================
+// Jenkinsfile-parallel-build — 多语言并行 build 场景
+//
+// 目标：在 Jenkins 原生 parallel 中同时跑 java / node / python / go 四个
+//       构建器，验证：
+//         1) apexBuild 在 parallel 分支内可用
+//         2) 各分支独立工作空间隔离（dir() 包裹）
+//         3) 各分支的产物可被并行收集
+//
+// 路径说明：使用 /var/jenkins_home/pipeline 作为仓库根（CpsFlowDefinition
+//   无 checkout scm，需要预先将仓库挂入容器）。
+// =========================================================================
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        booleanParam(name: 'RUN_JAVA',   defaultValue: true, description: 'Run Java/Maven build in parallel')
+        booleanParam(name: 'RUN_NODE',   defaultValue: true, description: 'Run Node build in parallel')
+        booleanParam(name: 'RUN_PYTHON', defaultValue: true, description: 'Run Python build in parallel')
+        booleanParam(name: 'RUN_GO',     defaultValue: true, description: 'Run Go build in parallel')
+    }
+
+    environment {
+        PIPELINE_ROOT = '/var/jenkins_home/pipeline'
+    }
+
+    stages {
+        stage('Setup apex ctx') {
+            steps {
+                script {
+                    apex { ctx ->
+                        ctx.setAttr('apex.parallel.marker', 'PARALLEL-BUILD-OK')
+                    }
+                }
+            }
+        }
+
+        stage('Parallel Multi-Language Build') {
+            steps {
+                script {
+                    Map<String, Closure> branches = [:]
+
+                    if (params.RUN_JAVA) {
+                        branches['java'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/java".toString()) {
+                                apexBuild('java') {
+                                    jdk       = 11
+                                    buildTool = 'maven'
+                                    goals     = ['-B', 'clean', 'test']
+                                    params {
+                                        flag('--batch-mode')
+                                        flag('-DskipITs')
+                                        property('maven.javadoc.skip', 'true')
+                                    }
+                                }
+                                stash name: 'jar-java', includes: 'target/demo.jar', allowEmpty: false
+                            }
+                        }
+                    }
+
+                    if (params.RUN_NODE) {
+                        branches['node'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/node".toString()) {
+                                apexBuild('node') {
+                                    packageManager = 'npm'
+                                    scripts        = ['install', 'test']
+                                    params {
+                                        flag('--no-audit')
+                                        flag('--no-fund')
+                                    }
+                                }
+                                stash name: 'tar-node', includes: 'package.json,test.js', allowEmpty: true
+                            }
+                        }
+                    }
+
+                    if (params.RUN_PYTHON) {
+                        branches['python'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/python".toString()) {
+                                apexBuild('python') {
+                                    venv     = false
+                                    commands = ['-m', 'pip', 'install', '--quiet', 'pytest']
+                                }
+                                sh label: 'pytest', script: '''
+                                    python3 -m pip install --quiet pytest || true
+                                    python3 -m pytest -q test_apex_sample.py
+                                '''
+                                stash name: 'pkg-python', includes: 'pyproject.toml,apex_sample.py,test_apex_sample.py'
+                            }
+                        }
+                    }
+
+                    if (params.RUN_GO) {
+                        branches['go'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/go".toString()) {
+                                sh label: 'go-probe', script: '''
+                                    set -e
+                                    if [ ! -f go.mod ]; then
+                                      mkdir -p .
+                                      go mod init github.com/apex/sample-go >/dev/null 2>&1 || true
+                                    fi
+                                    echo 'package main' > main.go
+                                    echo 'func main(){}' >> main.go
+                                '''
+                                apexBuild('go') {
+                                    commands   = ['build', './...']
+                                    mainPackage = './...'
+                                }
+                            }
+                        }
+                    }
+
+                    if (branches.isEmpty()) {
+                        error 'All parallel branches disabled; nothing to run'
+                    }
+
+                    echo "Starting ${branches.size()} parallel build branches: ${branches.keySet()}".toString()
+                    def results = parallel(branches)
+                    echo "Parallel build summary: ${results.keySet()} all completed".toString()
+                }
+            }
+        }
+
+        stage('Aggregate Artifacts') {
+            steps {
+                script {
+                    def sizes = [:]
+                    if (params.RUN_JAVA) {
+                        unstash 'jar-java'
+                        String jar = "${env.PIPELINE_ROOT}/docker/test-env/samples/java/target/demo.jar".toString()
+                        if (!fileExists(jar)) error("Java artifact missing: ${jar}")
+                        sizes['java']   = new File(jar).length()
+                    }
+                    if (params.RUN_NODE) {
+                        unstash 'tar-node'
+                        sizes['node']   = fileExists("${env.PIPELINE_ROOT}/docker/test-env/samples/node/package.json".toString()) ? 1 : 0
+                    }
+                    if (params.RUN_PYTHON) {
+                        unstash 'pkg-python'
+                        sizes['python'] = fileExists("${env.PIPELINE_ROOT}/docker/test-env/samples/python/pyproject.toml".toString()) ? 1 : 0
+                    }
+                    echo "Artifacts: ${sizes}".toString()
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'docker/test-env/samples/**/target/**,docker/test-env/samples/**/dist/**',
+                             allowEmptyArchive: true
+        }
+    }
+}

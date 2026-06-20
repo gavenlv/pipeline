@@ -5,15 +5,14 @@ import com.hsbc.treasury.apex.ci.errors.ApexCIException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * pipeline 阶段/步骤共享的不可变上下文。
+ * 轻量级 PipelineContext：仅作为 script 代理 + 业务数据容器。
  *
- * - script: Jenkins 提供的 CPS 脚本代理（用于 sh / echo / archiveArtifacts 等）
- * - env:    注入的环境变量
- * - params: 字符串参数 (来自 Jenkins 作业 / multi-branch)
- * - workDir: 工作目录
- * - attrs:   跨 stage 共享的业务数据（弱类型 Map）
+ * 在 Jenkins CPS 环境下，调用方应使用：
+ *   stage('X') { sh '...' }            // 原生 step
+ *   apex { ... }                        // 注入共享 ctx
+ *
+ * 本类只解决"如何在闭包之间共享 script / env / attrs"。
  */
-
 class PipelineContext implements Serializable {
     private static final long serialVersionUID = 1L
 
@@ -31,7 +30,7 @@ class PipelineContext implements Serializable {
         String resolvedWork = b.workDir
         if (resolvedWork == null && b.script != null) {
             try {
-                if (b.script.respondsTo('pwd')) {
+                if (b.script.metaClass.respondsTo(b.script, 'pwd')) {
                     resolvedWork = b.script.pwd()?.toString()
                 }
             } catch (Throwable ignore) { }
@@ -53,7 +52,7 @@ class PipelineContext implements Serializable {
     Object getAttr(String k, Object defaultValue) { return attrs.getOrDefault(k, defaultValue) }
     boolean hasAttr(String k)        { return attrs.containsKey(k) }
 
-    /** 合并 env（如 docker run 注入 KUBECONFIG） */
+    /** 合并 env 返回新 ctx（保持不可变） */
     PipelineContext withEnv(Map<String, String> more) {
         def merged = new LinkedHashMap<String, String>()
         merged.putAll(this.env)
@@ -67,5 +66,12 @@ class PipelineContext implements Serializable {
         b.sleeper = this.sleeper
         b.nodeLabel = this.nodeLabel
         return b.build()
+    }
+
+    /** 委托 script 执行 echo（不持有 script 的代码中使用） */
+    void log(String message) {
+        if (script != null && script.metaClass.respondsTo(script, 'echo')) {
+            script.echo(message?.toString() ?: '')
+        }
     }
 }

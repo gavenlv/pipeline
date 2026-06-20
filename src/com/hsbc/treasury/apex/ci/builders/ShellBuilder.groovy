@@ -34,11 +34,7 @@ class ShellBuilder extends AbstractBuilder implements Serializable {
     }
 
     @Override
-    Object execute(PipelineContext ctx) {
-        throw new ApexCIException("Use execute(ctx, body).")
-    }
-
-    Object execute(PipelineContext ctx, Closure body) {
+    Object execute(PipelineContext ctx, Closure body, Map opts = [:]) {
         def cfg = parseConfig(body)
         List<?> cmds = (List<?>) cfg.commands ?: []
         if (cmds.isEmpty()) throw new ApexCIException("shell.commands cannot be empty")

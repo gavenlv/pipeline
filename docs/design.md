@@ -1,44 +1,77 @@
-# apex-ci-library 设计文档
+# apex-ci-library 设计文档（v2.0 轻量版）
 
 > **项目名称**：`apex-ci-library`
 > **包名（Package）**：`com.hsbc.treasury.apex.ci`
 > **类型**：Jenkins Shared Library
-> **版本**：v1.0.0 (Draft)
-> **最后更新**：2026-06-19
+> **当前版本**：v2.0.0（**Lightweight / 轻量版**）— 2026-06-20
+> **历史版本**：v1.0.0 Draft（2026-06-19）— 已被取代，详见文末 §18
+
+> ## 版本说明
+>
+> 本文档描述 **v2.0 轻量版** 的架构与设计决策。
+> 详细使用请阅读 [user-guide.md](./user-guide.md) 与 [developer-guide.md](./developer-guide.md)。
+> v1.0 → v2.0 的演进动机与变更见 §18（v1.0 历史参考）。
+
+---
+
+## 目录
+
+1. [背景与目标](#1-背景与目标)
+2. [设计原则（v2.0）](#2-设计原则v20)
+3. [仓库结构](#3-仓库结构)
+4. [核心架构](#4-核心架构)
+5. [全局变量（`vars/`）与 DSL 设计](#5-全局变量vars-与-dsl-设计)
+6. [模块化与扩展点](#6-模块化与扩展点)
+7. [并发与扫描门禁](#7-并发与扫描门禁)
+8. [动态参数](#8-动态参数)
+9. [重试策略](#9-重试策略)
+10. [沙箱安全](#10-沙箱安全)
+11. [Docker 与 Nexus](#11-docker-与-nexus)
+12. [测试策略](#12-测试策略)
+13. [配置与通知](#13-配置与通知)
+14. [错误模型](#14-错误模型)
+15. [发布与兼容性](#15-发布与兼容性)
+16. [文档组织](#16-文档组织)
+17. [附录：典型 Pipeline 示例](#17-附录典型-pipeline-示例)
+18. [v1.0 历史参考与差异对比](#18-v10-历史参考与差异对比)
 
 ---
 
 ## 1. 背景与目标
 
-HSBC Treasury APEX 平台涉及大量多语言（Java / Node / Python / Go / .NET 等）微服务的持续集成。现有 CI 流水线存在以下问题：
+HSBC Treasury APEX 平台涉及大量多语言（Java / Node / Python / Go / Shell 等）微服务的持续集成。现有 CI 流水线存在以下问题：
 
 - 各业务线重复编写类似的 Jenkinsfile，模板分散、版本不一。
 - 安全扫描（SAST / SCA / Container / IaC / DAST）接入方式不统一，结果散落，难以聚合与门禁。
-- 不同语言构建工具链（Maven / npm / Poetry / Go modules / dotnet）参数化方式各异。
+- 不同语言构建工具链（Maven / npm / Poetry / Go modules）参数化方式各异。
 - 全局变量、凭据、超时、重试等横切关注点缺乏统一抽象。
+- 现有第三方库对沙箱、CPS 转换的兼容参差不齐，业务方易踩坑。
 
-**apex-ci-library** 的目标：
+**apex-ci-library v2.0** 的目标：
 
 1. **一份可复用的 CI 库**，作为 Jenkins Shared Library 在所有 APEX 流水线中统一接入。
-2. **自由组合（Composable）**：通过 Fluent DSL 让业务方按"积木"方式拼装自己的 Pipeline。
-3. **模块化（Modular）**：Builders、Scanners、Reporters、Notifiers 等均以模块形式独立开发、测试、发布。
-4. **沙箱安全（Sandbox-safe）**：所有代码在 Jenkins Sandbox 内安全运行，避免 `evaluate` / 动态 Groovy。
-5. **并发 + 异步**：扫描任务并行启动，并以 `Future` 风格聚合结果，不阻塞主流程。
-6. **多语言构建**：统一抽象支持 Java / Node / Python / Go / .NET / Shell 等。
+2. **轻量 DSL**：复用 Jenkins 原生 `stage` / `parallel` / `sh` / `node`，**不**发明新流程抽象。
+3. **封装外部交换**：仅在"与外部系统交互"处封装（构建、扫描、Docker、发布、通知、配置、重试）。
+4. **模块化**：Builders、Scanners、Reporters、Notifiers 独立开发、测试、发布。
+5. **沙箱安全**：所有 `sh` 用数组形式，无反射、无动态 import、无自建线程。
+6. **并发扫描 + 门禁**：走 Jenkins 原生 `parallel`，异常隔离，配置化门禁。
+7. **可测**：核心类用 `MockScript` 直接单测，无须 PipelineUnit。
 
 ---
 
-## 2. 设计原则
+## 2. 设计原则（v2.0）
 
 | 原则 | 描述 |
 | --- | --- |
-| **Convention over Configuration** | 零配置即可运行常见场景，复杂场景通过 `with{}` 块覆盖。 |
-| **Fluent DSL** | 链式 API，提升 Jenkinsfile 可读性。 |
-| **Pipeline as Code（强类型）** | 领域对象（`Pipeline` / `Stage` / `Step`）而非字符串模板。 |
-| **Sandbox First** | 所有外部命令必须通过数组形式 `sh(script: [...], returnStdout: true)`，禁止字符串拼接执行。 |
-| **Immutable Context** | `PipelineContext` 不可变，修改通过 `withConfig` 返回新上下文。 |
-| **Module SPI** | 通过 `ServiceLoader`-style 注册机制，模块可插拔。 |
-| **Testable in Isolation** | 核心逻辑（CPS-aware）单测覆盖率 ≥ 80%。 |
+| **Native First** | 流程编排（stage / parallel / matrix / when）一律走 Jenkins 原生 DSL，业务方看文档即可。 |
+| **External Adapter** | 库只封装"与外部交换"的步骤：Maven / npm / Trivy / Docker / Nexus / 邮件。 |
+| **Lightweight Context** | `PipelineContext` 仅为可序列化的轻量容器，attrs 可写。 |
+| **Sandbox First** | 所有 `sh` 走 `sh(script: [...], label: ...)` 数组形式；禁止字符串拼接。 |
+| **Composable Closures** | DSL 用闭包 + `DELEGATE_FIRST` 拼接；`apexScan { sast{} sca{} }` 风格。 |
+| **No Re-invented Threading** | 所有并发走 `script.parallel(branches)`；不引入 `Executors` / `Thread`。 |
+| **Testable in Isolation** | 核心类 CPS-aware 但能 mock；`MockScript` 替代 PipelineUnit。 |
+| **Fail-Fast Validation** | 命令拼装、参数解析、必填字段都在调用前完成校验。 |
+| **Serializable by Default** | 所有公开类 `implements Serializable` 并显式 `serialVersionUID`（CPS 要求）。 |
 
 ---
 
@@ -46,157 +79,102 @@ HSBC Treasury APEX 平台涉及大量多语言（Java / Node / Python / Go / .NE
 
 ```
 apex-ci-library/
-├── Jenkinsfile                              # 库的"自检"流水线（PR/Tag 触发）
-├── settings.gradle                          # Jenkins Shared Library 不使用，仅占位
-├── README.md
-├── CHANGELOG.md
+├── Jenkinsfile                              # 库自检（原生 pipeline 块）
+├── README.md                                # 入口：快速开始 + 文档导航
+├── build.sh / build.bat                     # groovyc + JUnit 编译与运行
+├── LICENSE                                  # MIT
 │
-├── src/                                     # Groovy 主源码（package: com.hsbc.treasury.apex.ci.*）
-│   └── com/hsbc/treasury/apex/ci/
-│       ├── ApexCIRoot.groovy                # 库根入口（脚本可直接 import）
-│       ├── Pipeline.groovy                  # 流水线编排器
-│       ├── Stage.groovy                     # 阶段抽象
-│       ├── Step.groovy                      # 步骤抽象
-│       ├── PipelineContext.groovy           # 跨阶段共享上下文（不可变）
-│       │
-│       ├── config/
-│       │   ├── GlobalConfig.groovy          # 全局配置（环境、镜像、代理）
-│       │   ├── BuildConfig.groovy           # 构建相关配置
-│       │   ├── ScanConfig.groovy            # 安全扫描配置
-│       │   └── PipelineConfig.groovy        # 顶层 Pipeline 配置
-│       │
-│       ├── core/
-│       │   ├── ParallelExecutor.groovy      # 并发执行器
-│       │   ├── AsyncResult.groovy           # 异步结果句柄（Future 抽象）
-│       │   ├── ResultAggregator.groovy      # 多源结果聚合
-│       │   ├── Retry.groovy                 # 重试策略
-│       │   └── Timeout.groovy               # 超时控制
-│       │
-│       ├── builders/                        # 多语言构建器
-│       │   ├── Builder.groovy               # 构建器接口
-│       │   ├── BuilderRegistry.groovy       # 构建器注册中心（SPI）
-│       │   ├── JavaBuilder.groovy           # Maven / Gradle
-│       │   ├── NodeBuilder.groovy           # npm / yarn / pnpm
-│       │   ├── PythonBuilder.groovy         # poetry / pip / uv
-│       │   ├── GoBuilder.groovy             # go modules
-│       │   ├── DotnetBuilder.groovy         # dotnet CLI
-│       │   └── ShellBuilder.groovy          # 兜底（Make / 自定义脚本）
-│       │
-│       ├── docker/                          # 容器镜像构建与推送
-│       │   ├── DockerBuilder.groovy         # docker build（多阶段 / BuildKit）
-│       │   ├── DockerPusher.groovy          # 推送到 Nexus / Harbor / ECR
-│       │   ├── ImageTagger.groovy           # 标签策略（sha / semver / latest）
-│       │   ├── DockerRegistry.groovy        # 注册中心 SPI
-│       │   └── DockerfileTemplate.groovy    # Dockerfile 模板渲染
-│       │
-│       ├── artifact/                        # 制品管理（NEXUS / Artifactory）
-│       │   ├── NexusClient.groovy           # Nexus 3 REST 客户端
-│       │   ├── ArtifactPublisher.groovy     # 制品上传
-│       │   ├── MavenArtifact.groovy         # jar/war/pom 上传
-│       │   ├── NpmArtifact.groovy           # npm tarball / scoped pkg
-│       │   ├── PyPiArtifact.groovy          # wheel / sdist
-│       │   ├── DockerArtifact.groovy        # 容器镜像清单
-│       │   └── ArtifactMetadata.groovy      # 版本 / 校验和 / 签名
-│       │
-│       ├── scanners/                        # 安全扫描（异步）
-│       │   ├── Scanner.groovy               # 扫描器接口
-│       │   ├── ScannerRegistry.groovy
-│       │   ├── SastScanner.groovy           # SonarQube / Semgrep
-│       │   ├── ScaScanner.groovy            # OWASP Dependency-Check / Snyk
-│       │   ├── ContainerScanner.groovy      # Trivy / Grype
-│       │   ├── IacScanner.groovy            # Checkov / tfsec
-│       │   ├── SecretsScanner.groovy        # gitleaks / trufflehog
-│       │   ├── LicenseScanner.groovy        # 许可证合规
-│       │   └── ScanResultCollector.groovy   # 异步结果采集器
-│       │
-│       ├── reporters/
-│       │   ├── Reporter.groovy
-│       │   ├── HtmlReporter.groovy
-│       │   ├── JunitReporter.groovy
-│       │   └── SummaryReporter.groovy
-│       │
-│       ├── notifiers/
-│       │   ├── Notifier.groovy
-│       │   ├── SlackNotifier.groovy
-│       │   ├── EmailNotifier.groovy
-│       │   └── TeamsNotifier.groovy
-│       │
-│       ├── utils/
-│       │   ├── Logger.groovy                # 统一日志（带 emoji-free 文本）
-│       │   ├── FileUtils.groovy
-│       │   ├── HttpClient.groovy
-│       │   ├── ToolResolver.groovy          # 工具链解析
-│       │   ├── Sandbox.groovy               # 沙箱安全工具
-│       │   └── Env.groovy                   # 环境变量与凭据访问
-│       │
-│       └── errors/
-│           ├── ApexCIException.groovy
-│           ├── BuildException.groovy
-│           ├── ScanException.groovy
-│           └── ConfigException.groovy
+├── vars/                                    # 全局 DSL 入口（轻量）
+│   ├── apex.groovy                          # 注入共享 PipelineContext
+│   ├── apexBuild.groovy                     # 多语言构建（java/node/python/go/shell）
+│   ├── apexScan.groovy                      # 并发扫描（Jenkins 原生 parallel）
+│   ├── apexDocker.groovy                    # 镜像构建与推送
+│   ├── apexPublish.groovy                   # Nexus 制品发布
+│   ├── apexRetry.groovy                     # 线性/指数退避/条件重试
+│   ├── apexParams.groovy                    # DynamicParams 工厂
+│   ├── apexConfig.groovy                    # YAML/Properties/JSON 解析
+│   └── apexNotify.groovy                    # 邮件通知
 │
-├── vars/                                    # 全局变量 / DSL（暴露给 Jenkinsfile）
-│   ├── apex.groovy                          # 顶层入口：apex { ... }
-│   ├── apexPipeline.groovy                  # 创建裸 Pipeline 对象
-│   ├── apexBuild.groovy                     # 快速构建：apexBuild(java, ...)
-│   ├── apexScan.groovy                      # 快速扫描：apexScan { sast(); sca() }
-│   ├── apexConfig.groovy                    # 全局配置
-│   ├── apexContext.groovy                   # 跨 Pipeline 共享上下文读取
-│   └── apexVersion.groovy                   # 库版本查询
+├── src/com/hsbc/treasury/apex/ci/           # 主源码
+│   ├── core/                                # 基础设施
+│   │   ├── PipelineContext.groovy           # 轻量共享上下文
+│   │   ├── PipelineContextBuilder.groovy     # 链式构造器
+│   │   ├── Sleeper.groovy                   # 抽象睡眠（测试可注入 mock）
+│   │   ├── JenkinsSleeper.groovy            # 走 script.sleep 的实现
+│   │   ├── NoOpSleeper.groovy               # 不睡眠（单测）
+│   │   ├── Retry.groovy                     # 重试策略
+│   │   └── DynamicParams.groovy             # 动态 CLI 参数
+│   │
+│   ├── builders/                            # 多语言构建
+│   │   ├── AbstractBuilder.groovy           # 抽象基类
+│   │   ├── JavaBuilder.groovy               # Maven / Gradle
+│   │   ├── NodeBuilder.groovy               # npm / yarn / pnpm
+│   │   ├── PythonBuilder.groovy             # poetry / pip / uv
+│   │   ├── GoBuilder.groovy                 # go modules
+│   │   ├── ShellBuilder.groovy              # 兜底
+│   │   └── BuilderFactory.groovy            # 注册表 + autoDetect
+│   │
+│   ├── scanners/                            # 扫描
+│   │   ├── ScanRunner.groovy                # 走 Jenkins 原生 parallel
+│   │   └── ScanResult.groovy                # 结果数据
+│   │
+│   ├── docker/                              # Docker 镜像
+│   │   ├── DockerBuilder.groovy             # buildx 构建
+│   │   ├── DockerPusher.groovy              # push 到任意 registry
+│   │   └── DockerBuildConfig.groovy         # 镜像配置
+│   │
+│   ├── artifact/                            # 制品
+│   │   ├── NexusClient.groovy               # Nexus 命令拼装
+│   │   └── ArtifactPublisher.groovy         # maven/npm/pypi/raw 发布
+│   │
+│   ├── reporters/                           # 上报
+│   │   └── ConsoleReporter.groovy           # 扫描汇总
+│   │
+│   ├── notifiers/                           # 通知
+│   │   └── EmailNotifier.groovy             # 邮件
+│   │
+│   ├── config/                              # 配置
+│   │   └── LibraryConfig.groovy             # YAML/Properties/JSON 解析
+│   │
+│   ├── utils/                               # 工具
+│   │   ├── Sandbox.groovy                   # 命令白名单
+│   │   ├── Util.groovy                      # 杂项
+│   │   └── ProjectDetector.groovy           # 语言自动检测
+│   │
+│   └── errors/                              # 错误模型
+│       ├── ApexCIException.groovy           # 基类
+│       ├── BuildException.groovy
+│       ├── ScanException.groovy
+│       └── ConfigException.groovy
 │
-├── resources/                               # 静态资源
-│   ├── templates/                           # Pipeline 模板
-│   │   ├── java-maven.tpl
-│   │   ├── node-npm.tpl
-│   │   ├── python-poetry.tpl
-│   │   ├── go-mod.tpl
-│   │   └── dotnet.tpl
-│   ├── policies/
-│   │   ├── sast-rules.json
-│   │   ├── sca-policy.json
-│   │   └── license-allowlist.json
-│   ├── tools/
-│   │   └── versions.json                    # 工具版本矩阵
-│   └── scripts/                             # 经审计的 shell 脚本
-│       ├── detect-language.sh
-│       └── install-tool.sh
+├── test/com/hsbc/treasury/apex/ci/          # 单元 + 集成测试
+│   ├── integration/
+│   │   └── LightweightDslTest.groovy        # 16 用例：覆盖并行/扫描/重试/门禁
+│   ├── core/                                # PipelineContext/Retry/DynamicParams
+│   ├── builders/                            # Java/Node/Python/Shell/BuilderFactory
+│   ├── scanners/                            # ScanRunner
+│   ├── docker/                              # DockerBuilder/Pusher
+│   ├── artifact/                            # NexusClient/ArtifactPublisher
+│   ├── config/                              # LibraryConfig
+│   ├── utils/                               # Sandbox/Util
+│   └── MockScript.groovy                    # 模拟 Jenkins script 代理
 │
-├── test/                                    # 单元 + 集成测试
-│   ├── com/hsbc/treasury/apex/ci/
-│   │   ├── PipelineTest.groovy
-│   │   ├── StageTest.groovy
-│   │   ├── core/
-│   │   │   ├── ParallelExecutorTest.groovy
-│   │   │   ├── AsyncResultTest.groovy
-│   │   │   └── ResultAggregatorTest.groovy
-│   │   ├── builders/
-│   │   │   ├── JavaBuilderTest.groovy
-│   │   │   ├── NodeBuilderTest.groovy
-│   │   │   └── PythonBuilderTest.groovy
-│   │   ├── scanners/
-│   │   │   └── ScanResultCollectorTest.groovy
-│   │   └── utils/
-│   │       └── SandboxTest.groovy
-│   └── jenkins/
-│       └── pipelineSmokeTest.groovy         # 真实 Jenkins 上的 Smoke 测试
+├── docker/test-env/                         # 集成测试环境
+│   ├── docker-compose.yml                   # Nexus3 + Registry + Jenkins
+│   ├── jenkins/                             # Dockerfile + JCasC + init scripts
+│   ├── Jenkinsfile-modules                  # 端到端验证 Pipeline
+│   └── test-it.sh                           # 一键测试
 │
-├── docs/
-│   ├── design.md                            # 本文档
-│   ├── architecture.md
-│   ├── user-guide.md                        # 使用手册
-│   ├── developer-guide.md                   # 二次开发指南
-│   ├── api-reference.md                     # API 自动生成
-│   ├── migration-guide.md                   # 旧 Jenkinsfile 迁移指南
-│   └── adr/                                 # 架构决策记录
-│       ├── 0001-package-naming.md
-│       ├── 0002-async-scan-model.md
-│       └── 0003-sandbox-safety.md
-│
-└── .github/
-    └── workflows/
-        ├── ci.yml                           # 库的 CI：lint + 单测 + Jenkins Pipeline
-        └── release.yml                      # Tag 触发：发布新版本
+└── docs/                                    # 文档
+    ├── design.md                            # 本文档
+    ├── user-guide.md                        # 用户手册
+    └── developer-guide.md                   # 二次开发指南
 ```
+
+> **轻量化原则**：
+> - 不使用 Gradle / Maven，直接 `groovyc` + `JUnitCore`。
+> - `src/` 直接作为发布产物被 Jenkins 加载。
+> - `vars/` 全部用 `def call(...)` 定义全局变量，**不**用 `@Field` / 自定义类。
 
 ---
 
@@ -207,93 +185,105 @@ apex-ci-library/
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Layer 0 : Jenkinsfile 业务方                                │
-│            apex { ... }                                      │
+│            node { stage { ... } }                            │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 1 : vars/  (全局 DSL)                                 │
-│            apex.groovy / apexBuild.groovy / apexScan.groovy │
+│  Layer 1 : vars/  (全局 DSL 入口)                            │
+│            apex / apexBuild / apexScan / apexDocker / ...   │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 2 : Pipeline / Stage / Step  (组合模型)               │
-│            Pipeline.groovy / Stage.groovy / Step.groovy      │
+│  Layer 2 : External Adapters (封装外部交换)                  │
+│            builders/ scanners/ docker/ artifact/             │
+│            reporters/ notifiers/                             │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 3 : Modules  (构建器 / 扫描器 / 上报器 / 通知器)       │
-│            builders/ scanners/ reporters/ notifiers/         │
+│  Layer 3 : Core (上下文 / 重试 / 动态参数)                   │
+│            core/  config/  utils/  errors/                   │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 4 : Core  (并发 / 异步 / 重试 / 超时 / 上下文)        │
-│            core/  config/  utils/                           │
-├──────────────────────────────────────────────────────────────┤
-│  Layer 5 : Jenkins Steps (sh / sh(script:[])/ readJSON 等)  │
+│  Layer 4 : Jenkins 原生 Steps                                │
+│            sh / parallel / timeout / stage / withCredentials │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 组合模型
+> **关键差异（v1.0 → v2.0）**：
+> - v1.0 多了 Layer 2.5：`Pipeline` / `Stage` / `Step` 自定义抽象层。
+> - v2.0 **完全省略**这一层——业务方直接用 Jenkins 原生 stage / parallel / sh。
 
-**Pipeline = Context + Stages[]**
-**Stage = Name + Steps[] + Optional parallel/agent**
-**Step = Action (Build / Scan / Report / Notify)**
+### 4.2 数据流
+
+```
+Jenkinsfile
+   │
+   ▼
+apex { ctx = ... }                  ← 注入 PipelineContext 到 script.binding.apexCtx
+   │
+   ├─→ stage('Build') { apexBuild('java') { ... } }
+   │       │  ① ApexCtxBuilder.executor(language).execute(ctx, body)
+   │       │  ② JavaBuilder.parseConfig(body) → JavaBuildConfig
+   │       │  ③ Sandbox.runShell(ctx, ['mvn', ...], label)
+   │       ▼
+   │     sh(script: ['mvn', 'clean', 'verify'], label: 'maven-build')
+   │
+   ├─→ stage('Security') { def r = apexScan { sast {} sca {} }; r.assertPassed() }
+   │       │  ① ScanRunner 收集 entries
+   │       │  ② script.parallel(branches)，每分支包 try/catch + timeout
+   │       │  ③ ConsoleReporter 输出汇总
+   │       │  ④ r.assertPassed() 检查 failOn 门禁
+   │       ▼
+   │     并发 3+ 个 sh，超时 30min（可配），异常隔离
+   │
+   └─→ stage('Publish') { apexDocker.buildAndPush(...) }
+           │  ① DockerBuilder.build(ctx, cfg)
+           │  ② sh(script: ['docker', 'buildx', 'build', ...], label)
+           │  ③ DockerPusher.push(ctx, ref, creds)
+           ▼
+         原生 docker buildx + docker push
+```
+
+### 4.3 轻量上下文（PipelineContext）
+
+`PipelineContext` 是跨闭包共享数据的容器：
 
 ```groovy
-// 类图（简化）
-Pipeline {
-    PipelineContext context
-    List<Stage> stages
-}
+class PipelineContext implements Serializable {
+    private static final long serialVersionUID = 1L
 
-Stage {
-    String name
-    StageType type        // SEQUENTIAL | PARALLEL | DYNAMIC
-    List<Step> steps
-}
+    final Object script                  // Jenkins script 代理（必备）
+    final String workDir                 // script.pwd() 缓存
+    final Map<String, String> env        // 不可变视图
+    final Map<String, Object> params     // 不可变视图
+    final Map<String, Object> attrs      // ConcurrentHashMap（业务方可读可写）
+    final Sleeper sleeper                // 默认 NoOpSleeper
+    final String nodeLabel
+    final long startedAt
 
-Step {
-    String name
-    Closure action        // CPS-safe
-    Map<String, Object> options
+    void setAttr(String k, Object v)    { attrs.put(k, v) }
+    Object getAttr(String k)             { return attrs.get(k) }
+    Object getAttr(String k, Object d)   { return attrs.getOrDefault(k, d) }
+    boolean hasAttr(String k)            { return attrs.containsKey(k) }
+
+    PipelineContext withEnv(Map<String, String> more) { /* 合并 env */ }
+    void log(String message)             { script?.echo(message) }
 }
 ```
 
-### 4.3 不可变上下文（PipelineContext）
+**与 v1.0 的差异**：
 
-`PipelineContext` 是跨 Stage 共享的"全局变量"容器，采用 **不可变对象 + 拷贝-改-写（copy-on-write）** 模式：
+| 维度 | v1.0 | v2.0 |
+| --- | --- | --- |
+| 可变性 | 不可变（`@Immutable`） | 可变 attrs + withEnv 派生 |
+| 全局配置 | 强类型 `GlobalConfig` / `BuildConfig` / `ScanConfig` | 移除，业务方用 `apexConfig {}` 按需取 |
+| 注入方式 | `apex.groovy` 创建完整对象 | `apex.groovy` 仅注入到 `script.binding` |
+| 字段数 | 30+ | 8（核心） |
 
-```groovy
-@Immutable
-class PipelineContext {
-    String appName
-    String branch
-    String commitSha
-    GlobalConfig global
-    BuildConfig build
-    ScanConfig scan
-    Map<String, Object> userVars           // 业务自定义变量
+### 4.4 设计动机
 
-    PipelineContext withConfig(String key, Object value) {
-        // 返回新对象（immutable）
-    }
-}
-```
+为什么 v2.0 要"轻量"？
 
-业务方在 `Jenkinsfile` 中可写入 / 读取：
+1. **CPS 兼容性**：v1.0 的 `Pipeline` / `Stage` / `Step` 三层抽象与 Jenkins CPS 转换器冲突，闭包变量捕获容易出 `NotSerializableException`。
+2. **学习成本**：业务方需要学一套"apex DSL"才能写 Jenkinsfile，Jenkins 升级时易破坏。
+3. **线程模型冲突**：v1.0 的 `ParallelExecutor` / `AsyncResult` 模拟 Future，但 Jenkins 已有原生 `parallel`，重复造轮子。
+4. **测试难**：v1.0 的强类型对象在 PipelineUnit 下难以 mock。
+5. **调试难**：v1.0 业务方报障时，需要追踪三层自定义抽象，Jenkins 日志与自定义日志混杂。
 
-```groovy
-apex {
-    vars = [team: 'treasury', costCenter: 'CC1234']
-
-    stages {
-        stage('Build') {
-            java { jdk = 21 }
-        }
-        stage('Security Scans') {
-            parallel {
-                sast { tool = 'sonarqube' }
-                sca   { tool = 'owasp' }
-                container { tool = 'trivy' }
-            }
-        }
-    }
-}
-```
-
-> **设计要点**：使用 `withConfig` 而不是 setter，保证 Sandbox 内不会出现"外部修改导致流水线状态错乱"的问题。
+v2.0 的轻量版避免了上述所有问题——业务方看的就是 Jenkins 原生 DSL，库只在"封装"处出现。
 
 ---
 
@@ -302,1096 +292,907 @@ apex {
 ### 5.1 顶层入口 `apex.groovy`
 
 ```groovy
-// vars/apex.groovy
-import com.hsbc.treasury.apex.ci.Pipeline
-import com.hsbc.treasury.apex.ci.PipelineContext
-import com.hsbc.treasury.apex.ci.config.GlobalConfig
+import com.hsbc.treasury.apex.ci.core.PipelineContext
 
 def call(Closure body) {
-    def ctx = PipelineContext.fromEnv(env)
-    def pipeline = new Pipeline(ctx)
-    body.delegate = pipeline
+    Object script = this
+    PipelineContext ctx = (script.binding?.hasVariable('apexCtx') ? script.apexCtx :
+        PipelineContext.builder().script(script).build())
+    script.binding?.setVariable('apexCtx', ctx)
+    body.delegate = ctx
     body.resolveStrategy = Closure.DELEGATE_FIRST
     body()
-    pipeline.execute(script)
+    return ctx
 }
 ```
 
-### 5.2 快速入口
+**职责**：仅注入共享 `PipelineContext`，**不**做 stage 包装 / 调度。零开销、幂等。
 
-| 全局变量 | 用途 | 示例 |
+### 5.2 DSL 入口一览
+
+| 全局变量 | 签名 | 职责 |
 | --- | --- | --- |
-| `apex` | 主 DSL | `apex { ... }` |
-| `apexBuild` | 一步构建 | `apexBuild('java-maven')` |
-| `apexScan` | 一步扫描 | `apexScan { sast(); sca() }` |
-| `apexConfig` | 设置全局默认配置 | `apexConfig { registry = '...' }` |
-| `apexContext` | 读取当前上下文 | `apexContext.branch` |
-| `apexVersion` | 库版本信息 | `apexVersion()` |
+| `apex` | `call(Closure)` | 注入 `PipelineContext` |
+| `apexBuild` | `call(lang, [opts], Closure)` | 多语言构建（内部走 `sh`） |
+| `apexScan` | `call(Closure)` | 并发扫描（内部走 `parallel` + `timeout`） |
+| `apexDocker` | `call(image, Closure)` / `push(image, creds)` / `buildAndPush(...)` | 镜像构建与推送 |
+| `apexPublish` | `call(baseUrl, repo, format, Closure)` | Nexus 制品发布 |
+| `apexRetry` | `linear / exponential / until` | 重试 |
+| `apexParams` | `call()` / `call(Closure)` | DynamicParams 工厂 |
+| `apexConfig` | `fromYaml / fromProperties / fromJson` | 配置解析 |
+| `apexNotify` | `call(Map, Closure)` | 邮件通知 |
 
-### 5.3 DSL 风格（最终期望的 Jenkinsfile）
+### 5.3 DSL 设计原则
+
+1. **闭包 delegate + `DELEGATE_FIRST`**：业务方写 `sast {}` 时可直接访问 delegate 的方法。
+2. **数组形式 `sh`**：每个 DSL 入口内部必须用 `sh(script: [...], label: ...)`。
+3. **不发明新流程原语**：stage / parallel / timeout / withCredentials 一律走原生。
+4. **幂等**：多次调用同一入口不产生副作用（ctx 复用、scan runner 可重用）。
+
+### 5.4 业务方典型 Jenkinsfile
 
 ```groovy
-@Library('apex-ci-library@main') _
+@Library('apex-ci-library@2.0') _
 
-apex {
-    appName = 'apex-treasury-svc'
-
-    vars = [
-        team        : 'treasury',
-        costCenter  : 'CC1234',
-        dataClass   : 'CONFIDENTIAL'
-    ]
-
-    agent { label 'docker && linux' }
-
-    environment {
-        DOCKER_BUILDKIT = '1'
-    }
-
-    options {
-        timeout(time: 30, unit: 'MINUTES')
-        ansiColor('xterm')
-        timestamps()
-    }
-
-    onInit  { ctx -> /* hook */ }
+pipeline {
+    agent any
+    options { timeout(time: 30, unit: 'MINUTES') }
 
     stages {
-        stage('Checkout') {
+        stage('Build') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('Build & Test') {
-            parallel {
-                java {
-                    jdk         = 21
-                    buildTool   = 'maven'   // maven | gradle
-                    goals       = ['clean verify']
-                    skipTests   = false
-                    onSuccess   { ctx -> echo "Java build OK: ${ctx.artifactId}" }
-                }
-                node {
-                    nodeVersion = '20.x'
-                    packageManager = 'pnpm'
-                    commands = ['install --frozen-lockfile', 'test', 'build']
-                }
-                python {
-                    pythonVersion = '3.12'
-                    packageManager = 'poetry'
-                    commands       = ['install', 'pytest']
+                apexBuild('java') {
+                    jdk = 17
+                    goals = ['clean', 'verify']
+                    params { flag('--batch-mode'); property('maven.javadoc.skip', 'true') }
                 }
             }
         }
-
-        stage('Security Scans') {
-            parallel {
-                sast     { tool = 'sonarqube'; qualityGate = true }
-                sca      { tool = 'owasp';     failOn = 'HIGH' }
-                secrets  { tool = 'gitleaks' }
-                container{ tool = 'trivy';     failOn = 'CRITICAL' }
-                iac      { tool = 'checkov';   enabled = fileExists('**/terraform/**') }
+        stage('Tests') {
+            steps {
+                parallel 'unit':  { sh './mvnw test -Dtest=Unit' },
+                          'integ': { sh './mvnw test -Dtest=Integ' }
             }
-            // 关键：scan() 立即返回 AsyncResult，不阻塞后续 stage
         }
-
+        stage('Security') {
+            steps {
+                def r = apexScan {
+                    sast    { sh 'sonar-scanner -Dsonar.qualitygate.wait=true' }
+                    sca     { sh 'snyk test --json' }
+                    container('app:1.0.0') { sh 'trivy image app:1.0.0' }
+                }
+                r.failOn = ['high', 'critical']
+                r.assertPassed()
+            }
+        }
+        stage('Image') {
+            steps {
+                apexDocker('registry.local/app:1.0.0') {
+                    dockerfile = 'docker/Dockerfile'
+                    platforms  = ['linux/amd64', 'linux/arm64']
+                }
+                apexDocker.push('registry.local/app:1.0.0', 'registry-creds')
+            }
+        }
         stage('Publish') {
             when { branch 'main' }
             steps {
-                containerBuild {
-                    image = "registry.hsbc/apex/${ctx.appName}"
-                    tags  = [ctx.commitSha, 'latest']
+                apexPublish('https://nexus.local', 'maven-releases', 'maven2') {
+                    maven(['-DskipTests'], 'nexus-deployer') {
+                        sh 'mvn deploy --batch-mode'
+                    }
                 }
-                containerPush { }
             }
         }
     }
 
-    onSuccess { ctx -> slackSend(channel: '#apex-ci', message: "✅ ${ctx.appName} OK") }
-    onFailure { ctx -> slackSend(channel: '#apex-ci', message: "❌ ${ctx.appName} failed") }
+    post {
+        always {
+            apexNotify(to: ['dev@local'], subject: "Build #${env.BUILD_NUMBER}",
+                       body: "Status: ${currentBuild.currentResult}")
+        }
+    }
 }
 ```
 
 ---
 
-## 6. 模块化与 SPI
+## 6. 模块化与扩展点
 
 ### 6.1 构建器（Builder）
 
 ```groovy
-// builders/Builder.groovy
-package com.hsbc.treasury.apex.ci.builders
+abstract class AbstractBuilder implements Serializable {
+    abstract String getLanguage()
+    abstract boolean detect(File projectDir)
+    abstract Object parseConfig(Closure body)
+    abstract Object execute(PipelineContext ctx, Closure body, Map opts = [:])
 
-interface Builder {
-    String getLanguage()
-    boolean detect(File projectDir)        // 静态能力描述
-    void build(PipelineContext ctx, Closure config)   // 真正执行
+    protected List<String> mergeDynamicParams(List<String> base, DynamicParams params) { ... }
+    protected List<String> platformAdapt(List<String> cmd, PipelineContext ctx) { ... }
 }
 ```
 
-注册机制（**避免**使用 `ServiceLoader`，因为 Jenkins Sandbox 不支持 ClassLoader 反射）：
+注册表（v2.0 不用反射，直接 `new`）：
 
 ```groovy
-// builders/BuilderRegistry.groovy
-class BuilderRegistry {
-    private static final Map<String, Class> REGISTRY = [:]
-
+class BuilderFactory {
+    private static final Map<String, AbstractBuilder> REGISTRY = new LinkedHashMap<>()
     static {
-        REGISTRY['java']   = JavaBuilder
-        REGISTRY['node']   = NodeBuilder
-        REGISTRY['python'] = PythonBuilder
-        REGISTRY['go']     = GoBuilder
-        REGISTRY['dotnet'] = DotnetBuilder
-        REGISTRY['shell']  = ShellBuilder
+        REGISTRY['java']   = new JavaBuilder()
+        REGISTRY['node']   = new NodeBuilder()
+        REGISTRY['python'] = new PythonBuilder()
+        REGISTRY['go']     = new GoBuilder()
+        REGISTRY['shell']  = new ShellBuilder()
     }
-
-    static Builder resolve(String language) {
-        def cls = REGISTRY[language]
-        if (!cls) throw new ConfigException("Unknown builder: ${language}")
-        return cls.getDeclaredConstructor().newInstance()
-    }
-
-    /** 自动检测（按优先级） */
-    static String autoDetect(File projectDir) {
-        if (new File(projectDir, 'pom.xml').exists()) return 'java'
-        if (new File(projectDir, 'build.gradle').exists()) return 'java'
-        if (new File(projectDir, 'package.json').exists()) return 'node'
-        if (new File(projectDir, 'pyproject.toml').exists()) return 'python'
-        if (new File(projectDir, 'go.mod').exists()) return 'go'
-        if (new File(projectDir, '*.csproj').exists()) return 'dotnet'
-        return 'shell'
-    }
+    static AbstractBuilder of(String language) { ... }
+    static String autoDetect(File projectDir) { ... }
 }
 ```
+
+**新增 Builder**：实现 `AbstractBuilder` → 注册到 `BuilderFactory` → 业务方写 `apexBuild('xxx')`。
 
 ### 6.2 扫描器（Scanner）
 
-```groovy
-// scanners/Scanner.groovy
-package com.hsbc.treasury.apex.ci.scanners
+v2.0 **不再**有独立的 `Scanner` 类。扫描是 `ScanRunner` 的闭包：
 
-interface Scanner {
-    String getType()                       // sast | sca | container | iac | secrets | license
-    String getTool()                       // 具体工具：sonarqube, owasp, trivy...
-    AsyncResult start(PipelineContext ctx) // 启动扫描，返回异步句柄
-    ScanResult fetch(AsyncResult handle)   // 拉取结果
+```groovy
+class ScanRunner {
+    void sast(String name = 'sast', Closure body)    { add('sast',      name, body) }
+    void sca(String name = 'sca', Closure body)      { add('sca',       name, body) }
+    void container(String name = 'container', Closure body) { add('container', name, body) }
+    void generic(String name, Closure body)          { add('generic',   name, body) }
+
+    Map<String, ScanResult> run() { /* 走 script.parallel */ }
+    void assertPassed(Map<String, ScanResult> results = null) { /* 门禁 */ }
 }
 ```
+
+**新增扫描类型**：
+
+- 简单场景：直接 `generic('secrets') { sh 'gitleaks ...' }` 即可。
+- 复杂场景：新建 `vars/<tool>.groovy` 封装扫描命令 + 报告解析，返回 `ScanResult`。
 
 ### 6.3 上报器 / 通知器
 
-类似 SPI，注册到 `ReporterRegistry` / `NotifierRegistry`。
+- `ConsoleReporter`：扫描后输出汇总（已内置）。
+- `EmailNotifier`：邮件（`apexNotify`）。
+- 业务方可自行扩展 `vars/<channel>Notify.groovy`（Slack / Teams / Webhook）。
 
----
+### 6.4 扩展点速查
 
-## 7. 并发与异步执行模型
-
-### 7.1 并发（Parallel）
-
-Jenkins 本身的 `parallel {}` 即"并发"，但容易出现：
-
-- 节点资源争用
-- 上下文污染
-- 日志错位
-
-**封装策略**：
-
-```groovy
-// core/ParallelExecutor.groovy
-class ParallelExecutor {
-    /**
-     * 在 Jenkins pipeline 内并发执行多个 Step。
-     * @param steps Map<String, Closure>  name -> step body
-     * @param failFast 是否一个失败立即取消其他
-     */
-    static Map<String, Object> execute(
-        def script,
-        Map<String, Closure> steps,
-        boolean failFast = true
-    ) {
-        def result = [:]
-        def errorBag = []
-
-        script.parallel steps.collectEntries { name, body ->
-            [(name): {
-                try {
-                    result[name] = body.call()
-                } catch (err) {
-                    errorBag << [name: name, error: err]
-                    if (failFast) throw err
-                }
-            }]
-        }
-
-        if (errorBag) {
-            throw new ApexCIException("Parallel steps failed: ${errorBag.name.join(',')}")
-        }
-        return result
-    }
-}
-```
-
-**业务层**：
-
-```groovy
-stage('Build') {
-    parallel {
-        java   { ... }
-        node   { ... }
-        python { ... }
-    }
-}
-```
-
-### 7.2 异步结果（Async / Future）
-
-针对**安全扫描**这类"启动后需要等待但又不希望阻塞主流程"的场景：
-
-```
-┌────────────┐   start(ctx)    ┌─────────────┐
-│ Scan Step  │ ──────────────▶ │ 扫描服务    │
-└────────────┘                 │  (异步)     │
-     │  AsyncResult            └──────┬──────┘
-     ▼                                │
-┌────────────┐   get()/await()        │
-│ Collector  │ ◀──────────────────────┘
-└────────────┘
-     │  ScanResult (合并 + 门禁判断)
-     ▼
-   Stage 'Collect Scan Results' (在最后阶段统一处理)
-```
-
-```groovy
-// core/AsyncResult.groovy
-package com.hsbc.treasury.apex.ci.core
-
-class AsyncResult<T> implements Serializable {
-    private static final long serialVersionUID = 1L
-
-    String id
-    String type                  // sast/sca/...
-    String tool
-    long startTime
-    String state = 'PENDING'     // PENDING | RUNNING | COMPLETED | FAILED | TIMEOUT
-    T payload
-
-    /** 阻塞直到完成（Jenkins CPS 中通过 `timeout`+`waitUntil` 实现） */
-    T await(int timeoutSeconds = 1800) {
-        // ...
-    }
-
-    /** 非阻塞拉取 */
-    Optional<T> tryGet() {
-        // ...
-    }
-}
-```
-
-```groovy
-// scanners/ScanResultCollector.groovy
-class ScanResultCollector {
-    List<AsyncResult> handles = []
-
-    void register(AsyncResult h) { handles << h }
-
-    List<ScanResult> collectAll(int timeoutSeconds = 1800) {
-        def results = []
-        handles.each { h ->
-            results << h.await(timeoutSeconds)
-        }
-        return aggregate(results)
-    }
-
-    private List<ScanResult> aggregate(List<ScanResult> results) {
-        // 合并各扫描器结果
-        // 应用门禁策略
-        // 返回聚合报告
-    }
-}
-```
-
-**使用**：
-
-```groovy
-stage('Security Scans') {
-    script {
-        def collector = apex.scan {
-            sast     { tool = 'sonarqube' }
-            sca      { tool = 'owasp';     failOn = 'HIGH' }
-            secrets  { tool = 'gitleaks' }
-            container{ tool = 'trivy' }
-        }
-        // 立即继续，不阻塞
-    }
-}
-
-stage('Collect & Gate') {
-    steps {
-        script {
-            def results = apex.collector.collectAll(timeout: 1800)
-            apex.gate(results)   // 根据 failOn / qualityGate 决定成败
-        }
-    }
-}
-```
-
-> **关键**：扫描的"启动"和"结果收集"被解耦到两个 Stage，**不会因为某个慢扫描拖累构建主链**。
-
-### 7.3 CPS-safe 的等待模式
-
-```groovy
-T await(int timeoutSeconds) {
-    def deadline = System.currentTimeMillis() + timeoutSeconds * 1000
-    while (state == 'PENDING' || state == 'RUNNING') {
-        if (System.currentTimeMillis() > deadline) {
-            state = 'TIMEOUT'
-            throw new ApexCIException("Async ${id} timeout")
-        }
-        // 必须 sleep 才能让 Jenkins 序列化推进
-        script.sleep(5)   // 注意是 script.sleep，避免阻塞 CPS 引擎
-        refresh()
-    }
-    return payload
-}
-```
-
----
-
-## 8. 多语言构建抽象
-
-### 8.1 公共接口
-
-```groovy
-abstract class AbstractBuilder implements Builder {
-    protected Object script
-    protected PipelineContext ctx
-
-    void withScript(Object script) { this.script = script }
-    void withContext(PipelineContext ctx) { this.ctx = ctx }
-
-    abstract String getLanguage()
-    abstract boolean detect(File projectDir)
-    abstract void build(PipelineContext ctx, Closure config)
-}
-```
-
-### 8.2 各语言支持矩阵
-
-| 语言 | 工具链 | 检测文件 | 默认行为 |
-| --- | --- | --- | --- |
-| **Java** | Maven / Gradle | `pom.xml` / `build.gradle` | `clean verify` + 单测 + Jacoco |
-| **Node** | npm / yarn / pnpm | `package.json` | `install --frozen-lockfile` + `test` + `build` |
-| **Python** | poetry / pip / uv | `pyproject.toml` / `requirements.txt` | `install` + `pytest` + `ruff` |
-| **Go** | go modules | `go.mod` | `go mod download` + `go test ./...` + `go build` |
-| **.NET** | dotnet CLI | `*.csproj` / `*.sln` | `restore` + `test` + `publish` |
-| **Shell** | make / 自定义 | 任意 | 兜底 |
-
-### 8.3 示例：JavaBuilder
-
-```groovy
-class JavaBuilder extends AbstractBuilder {
-
-    @Override
-    String getLanguage() { 'java' }
-
-    @Override
-    boolean detect(File projectDir) {
-        return new File(projectDir, 'pom.xml').exists() ||
-               new File(projectDir, 'build.gradle').exists() ||
-               new File(projectDir, 'build.gradle.kts').exists()
-    }
-
-    @Override
-    void build(PipelineContext ctx, Closure config) {
-        def cfg = new JavaBuildConfig().with(config)
-        tool(name: "jdk-${cfg.jdk}", type: 'jdk')
-
-        // sandbox-safe：参数全部展开为 list
-        def mvnGoals = cfg.goals ?: ['clean', 'verify']
-
-        if (new File('pom.xml').exists()) {
-            withMaven(maven: cfg.mavenVersion) {
-                sh(script: ['mvn'] + mvnGoals + ['-B', '-e'],
-                   returnStatus: true)
-            }
-        } else if (new File('build.gradle').exists() ||
-                   new File('build.gradle.kts').exists()) {
-            sh(script: ['./gradlew'] + mvnGoals + ['--no-daemon', '-B'],
-               returnStatus: true)
-        }
-    }
-}
-```
-
-### 8.4 自动检测流水线
-
-```groovy
-stage('Auto Build') {
-    steps {
-        script {
-            def lang = apex.detectLanguage()
-            apex.build(lang) { /* 可选覆盖 */ }
-        }
-    }
-}
-```
-
-> 业务方**零配置**即可运行：检测 → 选择 Builder → 执行默认 goal。
-
-### 8.5 动态参数（Dynamic Build Parameters）
-
-构建参数必须支持业务方**自由加减**，例如 Maven 编译时灵活加 `-pl xxx -am`、动态加 `-Dxxx`、动态切换 profile。
-
-```groovy
-// builders/JavaBuilder.groovy
-class JavaBuildConfig {
-    // —— 基础 ——
-    String jdk              = '17'
-    String buildTool        = 'maven'        // maven | gradle
-    String mavenVersion     = '3.9.9'
-    String gradleVersion    = '8.10'
-
-    // —— 动态目标 ——
-    List<String> goals      = ['clean', 'verify']
-    List<String> profiles   = []              // -P
-    List<String> properties = [:]             // 任意 -D 键值对
-
-    // —— 动态参数（自由加减） ——
-    List<String> cliOptions = []              // 任何额外 CLI 参数
-    List<String> modules    = []              // -pl xxx -am
-    boolean skipTests       = false
-    boolean parallelBuild   = true            // -T 1C
-    String threadCount      = '1C'
-
-    /** 业务方用 closure 自由修改 */
-    static JavaBuildConfig fromClosure(Closure body) {
-        def cfg = new JavaBuildConfig()
-        body.delegate = cfg
-        body.resolveStrategy = Closure.DELEGATE_FIRST
-        body()
-        return cfg
-    }
-}
-```
-
-**DSL 用法（核心：Maven 任意参数动态加减）**：
-
-```groovy
-java {
-    jdk = 21
-    buildTool = 'maven'
-
-    // 1) 直接覆盖 goal 列表
-    goals = ['clean', 'package', '-DskipITs']
-
-    // 2) 任意 -D 属性（加多少都行）
-    properties = [
-        'maven.javadoc.skip'      : 'true',
-        'checkstyle.skip'         : 'false',
-        'sonar.exclusions'        : '**/generated/**',
-        'project.build.sourceEncoding': 'UTF-8'
-    ]
-
-    // 3) 自由追加 CLI（不会和框架冲突）
-    cliOptions = [
-        '-pl', 'core-svc,api-svc',
-        '-am',
-        '--batch-mode',
-        '--update-snapshots',
-        '-fae'                    // fail at end
-    ]
-
-    // 4) 条件性追加（业务方最常用）
-    if (env.BRANCH_NAME == 'main') {
-        profiles += ['release']
-        cliOptions += ['-Dgpg.skip=false']
-    } else {
-        cliOptions += ['-Dgpg.skip=true']
-    }
-
-    // 5) 并行构建
-    parallelBuild = true
-    threadCount   = '4'
-
-    // 6) 跳过某些模块
-    modules = ['!legacy-module', '!examples/**']
-}
-```
-
-**框架侧如何消费**（拼装为 sandbox-safe 数组）：
-
-```groovy
-List<String> assembleCommand(JavaBuildConfig cfg) {
-    def cmd = ['mvn']
-    cmd += cfg.goals                       // goals 整体
-    if (cfg.skipTests)  cmd += ['-DskipTests']
-    if (cfg.parallelBuild) cmd += ["-T${cfg.threadCount}"]
-    if (cfg.profiles)   cmd += ['-P'] + cfg.profiles.flatten()
-    cfg.properties.each { k, v -> cmd += ["-D${k}=${v}"] }
-    if (cfg.cliOptions) cmd += cfg.cliOptions
-    return cmd
-}
-
-// 使用
-def cmd = assembleCommand(cfg)
-sh(script: cmd, returnStatus: true, label: 'maven-build')
-```
-
-> **设计要点**：所有参数都是**集合**（`List` / `Map`），业务方在 `closure` 中按需 `.add` / `.remove`，不会影响默认行为。框架侧组装时统一展开为 `sh(script: [...])` 数组，保证 sandbox 安全。
-
-### 8.6 通用动态参数模型 `DynamicParams`
-
-为了让所有 Builder / Scanner 都复用"灵活加减参数"的能力，引入统一的 `DynamicParams`：
-
-```groovy
-// core/DynamicParams.groovy
-package com.hsbc.treasury.apex.ci.core
-
-class DynamicParams implements Serializable {
-    private static final long serialVersionUID = 1L
-
-    List<String> flags      = []          // --batch-mode  /  --update-snapshots
-    Map<String,String> props = [:]        // -Dk=v
-    List<String> positionals = []         // 位置参数
-    Map<String,Object> extras = [:]        // 框架无关扩展
-
-    void flag(String f)        { flags << f }
-    void property(String k, String v) { props[k] = v }
-    void positional(String p)  { positionals << p }
-    void extra(String k, Object v) { extras[k] = v }
-    void removeFlag(String f)  { flags.removeAll { it == f } }
-    void removeProperty(String k) { props.remove(k) }
-}
-```
-
-每个 Builder 内部都有 `params = new DynamicParams()`，DSL 里既支持字段访问也支持链式调用。
-
----
-
-## 9. 容器镜像构建（Docker Build）
-
-### 9.1 核心抽象
-
-```groovy
-// docker/DockerBuilder.groovy
-package com.hsbc.treasury.apex.ci.docker
-
-class DockerBuildConfig {
-    String dockerfile       = 'Dockerfile'
-    String context          = '.'
-    List<String> buildArgs  = []           // --build-arg KEY=VAL
-    List<String> secrets    = []           // --secret id=src,src=foo  (BuildKit)
-    List<String> platforms  = ['linux/amd64']
-    List<String> cacheFrom  = []           // --cache-from type=registry,ref=...
-    String networkMode      = 'default'
-    boolean noCache         = false
-    int    timeoutMinutes   = 30
-    DynamicParams params                  // 任何额外 --xxx
-}
-```
-
-### 9.2 DSL 完整示例
-
-```groovy
-stage('Containerize') {
-    steps {
-        containerBuild {
-            // 1) 基础
-            dockerfile = 'docker/Dockerfile'
-            context    = '.'
-
-            // 2) 多架构（并发构建）
-            platforms  = ['linux/amd64', 'linux/arm64']
-
-            // 3) 任意 --build-arg（自由加减）
-            buildArgs = [
-                'NODE_VERSION=20.18.0',
-                'JAR_FILE=target/*.jar',
-                'PROXY=http://proxy.hsbc:8080'
-            ]
-
-            // 4) BuildKit Secret（不留在镜像层里）
-            secrets = [
-                'id=npmrc,src=.npmrc',
-                'id=settings,src=settings.xml'
-            ]
-
-            // 5) 缓存
-            cacheFrom = [
-                "type=registry,ref=nexus.hsbc/apex/${ctx.appName}:buildcache"
-            ]
-
-            // 6) 标签（框架自动算 tag）
-            tags = [
-                ctx.commitSha,                 // sha
-                ctx.semver ?: 'latest',       // semver
-                env.BRANCH_NAME.replaceAll('/', '-')
-            ]
-
-            // 7) 任意额外参数（最终拼到 sh 数组里）
-            params {
-                flag('--progress=plain')
-                flag('--ssh=default')
-                property('BUILDKIT_INLINE_CACHE', '1')
-            }
-
-            // 8) 资源限制
-            timeoutMinutes = 30
-        }
-    }
-}
-```
-
-### 9.3 DockerBuilder 内部实现（沙箱安全）
-
-```groovy
-class DockerBuilder {
-    void build(PipelineContext ctx, DockerBuildConfig cfg) {
-        // 1) 启用 BuildKit
-        script.withEnv([
-            'DOCKER_BUILDKIT=1',
-            'BUILDKIT_PROGRESS=plain'
-        ]) {
-            // 2) 多架构并发：调用 buildx
-            def platforms = cfg.platforms.join(',')
-            def tagArgs   = cfg.tags.collectMany { t -> ['--tag', "${cfg.imageName}:${t}"] }
-            def buildArgArgs = cfg.buildArgs.collectMany { v -> ['--build-arg', v] }
-            def secretArgs   = cfg.secrets.collectMany  { v -> ['--secret', v] }
-            def cacheArgs    = cfg.cacheFrom.collectMany { v -> ['--cache-from', v] }
-
-            def cmd = ['docker', 'buildx', 'build'] +
-                      ['--platform', platforms] +
-                      ['--push=false'] +         // 推送独立阶段
-                      tagArgs +
-                      buildArgArgs +
-                      secretArgs +
-                      cacheArgs +
-                      (cfg.noCache ? ['--no-cache'] : []) +
-                      ['-f', cfg.dockerfile] +
-                      (cfg.params ? cfg.params.flags : []) +
-                      cfg.context
-
-            // 3) sandbox-safe 调用
-            script.sh(script: cmd, returnStatus: true, label: 'docker-buildx')
-        }
-    }
-}
-```
-
-### 9.4 缓存策略
-
-| 策略 | 适用 | 配置 |
-| --- | --- | --- |
-| **Registry cache** | 跨 Pipeline 共享 | `--cache-from type=registry,ref=...` |
-| **Inline cache** | 单次构建 | `--build-arg BUILDKIT_INLINE_CACHE=1` |
-| **Local cache** | 自托管 Runner | `--cache-to type=local,dest=...` |
-| **S3 cache** | 混合云 | `--cache-to type=s3,...` |
-
----
-
-## 10. Nexus 制品发布
-
-### 10.1 Nexus 客户端
-
-```groovy
-// artifact/NexusClient.groovy
-package com.hsbc.treasury.apex.ci.artifact
-
-class NexusClient implements Serializable {
-    private static final long serialVersionUID = 1L
-
-    String baseUrl          // https://nexus.hsbc
-    String repository       // maven-releases / npm-hosted / pypi-releases / docker
-    String credentialsId    // 'nexus-creds'
-    String format           // maven2 | npm | pypi | docker | raw
-
-    // —— HTTP 封装（沙箱安全：只走 httpRequest 步骤，不动态构造） ——
-    Map<String,Object> get(String path) { ... }
-    Map<String,Object> put(String path, byte[] body, String contentType) { ... }
-    Map<String,Object> post(String path, Map json) { ... }
-
-    // —— 制品查询 ——
-    boolean exists(String group, String name, String version) { ... }
-    Map<String,Object> getMetadata(String group, String name, String version) { ... }
-}
-```
-
-### 10.2 DSL 入口 `apexNexus {}`
-
-```groovy
-// vars/apexNexus.groovy
-def call(Closure body) {
-    def cfg = new NexusConfig()
-    body.delegate = cfg
-    body.resolveStrategy = Closure.DELEGATE_FIRST
-    body()
-    return new NexusClient(script, cfg)
-}
-```
-
-### 10.3 Maven 制品发布
-
-```groovy
-stage('Publish to Nexus') {
-    when { branch 'main' }
-    steps {
-        // —— 方式 A：直接 mvn deploy（最简单） ——
-        java {
-            jdk = 21
-            goals = ['clean', 'deploy']
-            properties = [
-                'altDeploymentRepository': 'nexus::default::https://nexus.hsbc/repository/maven-releases/',
-                'gpg.skip'                : 'false'
-            ]
-            cliOptions = [
-                '--settings', 'ci/settings-nexus.xml'
-            ]
-        }
-
-        // —— 方式 B：API 显式上传（推荐，可观测） ——
-        apexNexus {
-            baseUrl      = 'https://nexus.hsbc'
-            repository   = 'maven-releases'
-            credentialsId = 'nexus-deployer'
-            format       = 'maven2'
-        }.publishMaven(group: 'com.hsbc.treasury.apex',
-                       artifactId: ctx.appName,
-                       version: ctx.semver,
-                       files: ['target/*.jar', 'target/*.pom', 'target/*.war'])
-    }
-}
-```
-
-### 10.4 npm 制品发布
-
-```groovy
-stage('Publish npm') {
-    when { branch 'main' }
-    steps {
-        node {
-            commands = ['ci', 'build', 'npm publish --registry=https://nexus.hsbc/repository/npm-hosted/']
-        }
-        // 或显式
-        apexNexus {
-            baseUrl    = 'https://nexus.hsbc'
-            repository = 'npm-hosted'
-            format     = 'npm'
-        }.publishNpm(packageJson: 'package.json',
-                     tarball: "dist/${ctx.appName}-${ctx.version}.tgz")
-    }
-}
-```
-
-### 10.5 Python 制品发布（PyPI 代理）
-
-```groovy
-stage('Publish PyPI') {
-    steps {
-        python {
-            commands = [
-                'poetry config repositories.nexus https://nexus.hsbc/repository/pypi-releases/',
-                'poetry publish -r nexus --username $NEXUS_USER --password $NEXUS_PASS'
-            ]
-        }
-    }
-}
-```
-
-### 10.6 Docker 镜像推送到 Nexus
-
-```groovy
-stage('Push Image') {
-    steps {
-        containerPush {
-            registry   = 'nexus.hsbc'
-            repository = "apex/${ctx.appName}"
-            tags       = [ctx.commitSha, ctx.semver ?: 'latest']
-            // 复用 stage 9 中已 build 的镜像
-        }
-    }
-}
-```
-
-**内部实现**：
-
-```groovy
-// docker/DockerPusher.groovy
-class DockerPusher {
-    void push(PipelineContext ctx, DockerPushConfig cfg) {
-        // 1) 登录（凭据来自 Jenkins Credentials）
-        script.withCredentials([
-            script.usernamePassword(
-                credentialsId: cfg.credentialsId,
-                usernameVariable: 'NEXUS_USER',
-                passwordVariable: 'NEXUS_PASS'
-            )
-        ]) {
-            script.sh(script: [
-                'docker', 'login', cfg.registry,
-                '-u', script.env.NEXUS_USER,
-                '-p', script.env.NEXUS_PASS
-            ], returnStatus: true, label: 'docker-login')
-        }
-
-        // 2) 多 tag 推送
-        def images = cfg.tags.collect { t -> "${cfg.registry}/${cfg.repository}:${t}" }
-        // 3) 重打 tag（单架构）或 buildx --push（多架构）
-        if (cfg.platforms.size() > 1) {
-            // buildx push 已经合并到 build
-        } else {
-            def localTag = "${cfg.repository}:${cfg.tags[0]}"
-            script.sh(script: ['docker', 'tag', localTag, images[0]], returnStatus: true)
-            images.each { img ->
-                script.sh(script: ['docker', 'push', img], returnStatus: true, label: "push-${img}")
-            }
-        }
-    }
-}
-```
-
-### 10.7 制品元数据
-
-每次发布都会写入 `ArtifactMetadata`：
-
-```groovy
-class ArtifactMetadata {
-    String name
-    String version
-    String commitSha
-    String branch
-    long   timestamp
-    String url                  // Nexus UI
-    Map<String,String> checksums // sha256
-    String[] signatures         // .asc
-}
-```
-
-并通过 `reporters/` 输出到 Jenkins Build Artifacts + 推送至 APEX 元数据库。
-
-### 10.8 推送安全门禁
-
-```groovy
-nexusPush {
-    gate {
-        requireGreenBuild    = true           // 必须全绿
-        requireSignedCommits = true           // GPG / SSH
-        requireScanPass      = true           // SAST/SCA 必须无 High+
-        allowedBranches      = ['main', 'release/*']
-    }
-}
-```
-
-> 若任一条件不满足，框架**主动拒绝推送并报警**，避免错把脏制品推上 Nexus。
-
----
-
-
-
-## 11. 沙箱安全（Sandbox-safe）
-
-Jenkins 推荐在 **Sandbox** 模式运行 Shared Library。本库遵循以下规则：
-
-### 11.1 禁止
-
-| 行为 | 替代方案 |
+| 扩展点 | 操作 |
 | --- | --- |
-| `evaluate('something')` | 使用 `@NonCPS` 函数 + Closure 组合 |
-| `new GroovyShell().evaluate(...)` | 不支持 |
-| 字符串拼接 `sh "echo $x"` | 必须 `sh(script: ['echo', x])` |
-| 动态 import / Class.forName | 静态 import；通过注册中心 |
-| 反射 `obj.@field` | 显式 getter |
-| 启动子线程（`Thread.start`） | 使用 `parallel` |
-| 文件系统任意读写 | 受限工具：`utils/FileUtils` |
+| 新语言 | 新建 `xxx/Builder.groovy` + 注册到 `BuilderFactory` |
+| 新扫描类型 | `apexScan { generic('xxx') { ... } }` 即可 |
+| 新通知渠道 | 新建 `vars/<x>Notify.groovy` |
+| 新报告格式 | 新建 `reporters/XxxReporter.groovy` |
+| 新全局变量 | 新建 `vars/<name>.groovy` |
+| 新 Artifact 仓库 | 新建 `artifact/XxxClient.groovy` |
 
-### 11.2 沙箱工具（`utils/Sandbox.groovy`）
+---
+
+## 7. 并发与扫描门禁
+
+### 7.1 原生 `parallel` 是唯一并发入口
+
+```groovy
+Map<String, ScanResult> run() {
+    if (entries.isEmpty()) return [:]
+    if (entries.size() == 1) { /* 同步走避免 CPS 副作用 */ }
+    Map<String, Closure> branches = [:]
+    for (Map<String, Object> e : entries) {
+        String taskName = "${e['type']}-${e['name']}".toString()
+        branches[taskName] = { ->
+            try {
+                script.timeout(time: timeoutMin, unit: 'MINUTES') {
+                    Object out = e['body'].call()
+                    return (out instanceof ScanResult) ? out :
+                        new ScanResult(scanner: taskName, status: 'OK', summary: 'no-op')
+                }
+            } catch (Throwable t) {
+                return new ScanResult(scanner: taskName, status: 'FAILED',
+                                      summary: t.message, error: t)
+            }
+        }
+    }
+    Map<String, Object> raw = script.parallel(branches)
+    Map<String, ScanResult> results = [:]
+    raw.each { k, v -> results[k as String] = v as ScanResult }
+    new ConsoleReporter().reportScan(ctx, results.values() as List)
+    return results
+}
+```
+
+**关键设计**：
+
+- **走 `script.parallel`**：不引入 `Executors` / `Thread`，沙箱安全。
+- **单分支不调 parallel**：`entries.size() == 1` 时同步执行，避免 CPS 副作用。
+- **每分支独立 `timeout`**：默认 30min，可配。
+- **每分支独立 `try/catch`**：异常隔离，不让其他分支失败。
+- **不创建 stage**：`run()` 自己不 `script.stage(...)`，由调用方决定 stage 命名。
+
+### 7.2 门禁判断（`assertPassed`）
+
+```groovy
+void assertPassed(Map<String, ScanResult> results = null) {
+    Map<String, ScanResult> r = (results != null) ? results :
+        (this.lastResults ?: run())
+    List<String> violations = []
+    r.each { String name, ScanResult res ->
+        if (res.status == 'FAILED' || res.status == 'TIMEOUT') {
+            violations << "${name}:${res.status}:${res.summary}".toString()
+        }
+        for (String sev : failOn) {
+            int n = res.getCount(sev)
+            if (n > 0) violations << "${name}:${sev}=${n}".toString()
+        }
+    }
+    if (!violations.isEmpty()) {
+        throw new ScanException("Scanner gate failed: " + violations.join('; '))
+    }
+}
+```
+
+**门禁策略**：
+
+```groovy
+r.failOn = ['high']               // 默认：任意 high 失败
+r.failOn = ['critical', 'high']   // critical 或 high 失败
+r.failOn = []                     // 关闭门禁（仅记录）
+r.failOn = ['medium', 'high']     // 严格模式
+```
+
+**状态门禁**：状态为 `FAILED` / `TIMEOUT` 的分支**永远**计为违规（与 `failOn` 无关）。
+
+### 7.3 单分支优化
+
+`ScanRunner.run()` 检测到 `entries.size() == 1` 时**不调 parallel**——直接同步执行：
+
+- 避免无意义的 parallel 开销；
+- 避免单分支时 parallel 的 CPS 副作用（如某些 Jenkins 版本在单分支 parallel 时阻塞）；
+- 单测时 `MockScript` 容易断言。
+
+### 7.4 等待扫描的语义
+
+v2.0 明确：**`apexScan{}` 是同步阻塞**的（内部走 parallel，parallel 阻塞）。业务方要做"启动后等会儿"直接用 Jenkins 原生 stage 串行：
+
+```groovy
+stage('Build')      { apexBuild('java') { jdk = 17 } }   // ① Build
+stage('Security')   {                                     // ② 等 Build 完成后
+    def r = apexScan { sast {} sca {} container('app:1.0.0') {} }
+    r.assertPassed()                                       // ③ 门禁
+}
+stage('Publish')    { apexPublish(...) }                   // ④ 等 Security 完成后
+```
+
+不需要"异步 + 收集"的两阶段模式——Jenkins 原生 stage 已经天然按顺序串行。
+
+---
+
+## 8. 动态参数
+
+`DynamicParams` 解决"Maven 编译参数灵活加减"的需求：
+
+```groovy
+class DynamicParams implements Serializable {
+    private final List<String> flags = []
+    private final Map<String, String> props = [:]
+    private final List<String> positionals = []
+    private final Map<String, Object> extra = [:]
+
+    DynamicParams flag(String f)            // 长选项
+    DynamicParams property(String k, String v)  // -Dk=v
+    DynamicParams positional(String p)     // 末尾参数
+    DynamicParams extra(String k, Object v)  // 业务自定义
+
+    // 链式
+    DynamicParams addFlag(String f)
+    DynamicParams addProperty(String k, String v)
+    DynamicParams addPositional(String p)
+
+    // 删除
+    boolean removeFlag(String f)
+    boolean removeProperty(String k)
+
+    // 拷贝
+    DynamicParams copyWith() / copyWith(Closure body)
+
+    // 渲染
+    List<String> toArgList()
+}
+```
+
+**Builder 集成**（以 `JavaBuilder` 为例）：
+
+```groovy
+protected List<String> mergeDynamicParams(List<String> base, DynamicParams params) {
+    List<String> out = new ArrayList<>(base)
+    params?.flags.each { out << it }
+    params?.props.each { k, v -> out << "-D${k}=${v}".toString() }
+    params?.positionals.each { out << it }
+    params?.extra.each { k, v -> out << it?.toString() }   // 业务自定义
+    return out
+}
+```
+
+**业务方使用**：
+
+```groovy
+apexBuild('java') {
+    jdk = 17
+    goals = ['clean', 'package']
+    params {
+        flag('--batch-mode')
+        property('maven.javadoc.skip', 'true')
+        positional('install')
+    }
+}
+
+// 调试时临时加：
+def p = apexParams().copyWith()
+p.addFlag('--debug')
+p.removeFlag('--batch-mode')
+```
+
+---
+
+## 9. 重试策略
+
+### 9.1 `Retry` 抽象
+
+```groovy
+class Retry implements Serializable {
+    int maxAttempts = 1
+    long initialDelayMs = 0L
+    double backoffMultiplier = 1.0
+    int maxDelayMs = 60000
+    List<Class<? extends Throwable>> retryOn = [Exception]
+    Sleeper sleeper
+
+    static Retry none()                                    { ... }
+    static Retry linear(int n, long delayMs)               { ... }
+    static Retry exponential(int n, long initialMs, double mult) { ... }
+
+    static <T> T execute(Retry retry, Closure<T> body)     { ... }
+}
+```
+
+### 9.2 三种策略
+
+| 策略 | 场景 | 示例 |
+| --- | --- | --- |
+| `linear(n, ms)` | 错误持续时间短，间隔固定 | `apexRetry.linear(3, 1000) { sh 'npm install' }` |
+| `exponential(n, ms, mult)` | 服务重启 / 缓存预热，指数增长 | `apexRetry.exponential(5, 500, 2.0) { sh 'mvn deploy' }` |
+| `until(n, ms) { cond }` | 等待外部条件 | `apexRetry.until(10, 2000) { sh 'check-status.sh'; return ready }` |
+
+### 9.3 与扫描门禁的组合
+
+```groovy
+stage('Security') {
+    def r = apexScan {
+        // 内部：scanner 内部独立重试
+        sast { apexRetry.linear(2, 1000) { sh 'sonar-scanner ...' } }
+        sca  { apexRetry.linear(2, 1000) { sh 'snyk test' } }
+    }
+    // 扫描层门禁
+    r.failOn = ['high']
+    r.assertPassed()
+}
+
+stage('Publish') {
+    // 整个 publish 阶段再重试
+    apexRetry.exponential(3, 2000, 2.0) {
+        withCredentials([...]) { sh 'mvn deploy -DskipTests' }
+    }
+}
+```
+
+**理由**：scanner 内部的瞬时错误不影响其他 scanner；publish 失败不会污染扫描结果；重试策略独立调参。
+
+### 9.4 异常分类
+
+```groovy
+// 默认重试所有 Exception
+new Retry(maxAttempts: 3).execute { ... }
+
+// 只重试可恢复的异常
+new Retry(
+    maxAttempts: 5,
+    retryOn: [java.net.SocketTimeoutException, java.io.IOException]
+).execute { ... }
+
+// 凭据错误（401/403）应不重试——让业务方快速发现
+```
+
+---
+
+## 10. 沙箱安全
+
+### 10.1 原则
+
+Jenkins 沙箱审计所有未在白名单的方法调用。任何 `evaluate` / 反射 / 动态 import / 任意文件读写都会抛 `RejectedAccessException`。
+
+### 10.2 必须遵守的规则
+
+| 规则 | 反例（被拒） | 正例（通过） |
+| --- | --- | --- |
+| `sh` 命令 | `sh "mvn $goal"` | `sh(script: ['mvn', goal])` |
+| `evaluate` | `evaluate("return $x")` | 静态 `if / else` |
+| 反射 | `obj.'field'` | `obj.getField()` |
+| 动态 import | `this.class.classLoader.loadClass('Foo')` | 静态 import + Factory |
+| 多线程 | `new Thread({...}).start()` | `script.parallel {}` |
+| 任意文件读写 | `new File('/etc/x').text` | `script.readFile` / `script.writeFile` |
+| `Thread.sleep` | `Thread.sleep(1000)` | `script.sleep(1)` |
+
+### 10.3 `Sandbox.runShell` —— 命令白名单
 
 ```groovy
 class Sandbox {
-    /** 安全执行 shell 命令 */
+    private static List<String> COMMAND_WHITELIST = [
+        'mvn', 'gradle', 'npm', 'yarn', 'pnpm', 'poetry',
+        'docker', 'kubectl', 'helm', 'git', 'curl', 'jq',
+        'python', 'python3', 'go', 'dotnet', 'cargo', 'rustc'
+    ]
+
     static int runShell(Object script, List<String> cmd, String label = null) {
-        if (cmd == null || cmd.isEmpty()) {
-            throw new ApexCIException("Empty command")
-        }
-        // 校验命令白名单（可配置）
-        if (!Whitelist.isAllowed(cmd[0])) {
+        if (!cmd) throw new ApexCIException("Empty command")
+        if (!COMMAND_WHITELIST.contains(cmd[0])) {
             throw new ApexCIException("Command not whitelisted: ${cmd[0]}")
         }
         return script.sh(script: cmd, label: label ?: cmd[0], returnStatus: true)
     }
-
-    /** 安全读取文件 */
-    static String readFile(Object script, String path, int maxBytes = 10 * 1024 * 1024) {
-        if (!Whitelist.isPathAllowed(path)) {
-            throw new ApexCIException("Path not allowed: ${path}")
-        }
-        return script.readFile(path)
-    }
 }
 ```
 
-### 11.3 审计与 Lint
+> **注意**：`Sandbox.runShell` 仅做白名单审计，**不**执行沙箱——沙箱是 Jenkins 全局机制。
 
-- **CI 强制 Lint**：`npm-groovy-lint` 规则集 + 自定义规则（禁止 `evaluate`、禁止裸 `sh "`、禁止反射）。
-- **Pipeline Sandbox Replay**：每个 PR 在真实 Jenkins 上以 **Sandbox 模式** 跑一次 `pipelineSmokeTest`。
+### 10.4 白名单申请
 
----
+业务方需要新增命令时：
 
-## 12. 配置管理
+1. 在 `Sandbox.COMMAND_WHITELIST` 中添加
+2. 提交 PR 说明用途
+3. CI 跑 `bash docker/test-env/test-it.sh` 验证沙箱回放
+4. 库管理员审批合并
 
-### 12.1 全局配置（`apexConfig{}`）
+### 10.5 调试沙箱
+
+```bash
+# Jenkins master
+tail -f /var/log/jenkins/script-approval.log | grep -i apex
+```
+
+临时关闭（仅本地开发）：
 
 ```groovy
-apexConfig {
-    registry         = 'registry.hsbc/apex'
-    defaultAgent     = 'docker && linux'
-    defaultTimeout   = '30m'
-    retry {
-        maxAttempts = 3
-        backoff     = 'EXPONENTIAL'
-    }
-    credentials {
-        docker = 'apex-docker-creds'
-        sonar  = 'apex-sonar-token'
-    }
-    slack {
-        channel = '#apex-ci'
+@Library('apex-ci-library@main') _   // 默认沙箱
+// @Library('apex-ci-library@main') _; library 'apex-ci-library' /* 关闭沙箱 */
+```
+
+> **生产强制** 沙箱模式。
+
+---
+
+## 11. Docker 与 Nexus
+
+### 11.1 Docker 构建
+
+```groovy
+stage('Build Image') {
+    apexDocker('ghcr.io/acme/app:1.0.0') {
+        dockerfile = 'docker/Dockerfile'
+        context    = '.'
+        platforms  = ['linux/amd64', 'linux/arm64']
+        buildArgs  = ['NODE_VERSION=20', 'JAR_FILE=target/*.jar']
+        secrets    = ['id=npmrc,src=.npmrc']
+        cacheFrom  = ["type=registry,ref=registry.local/app:buildcache"]
+        cacheTo    = ["type=registry,ref=registry.local/app:buildcache,mode=max"]
+        noCache    = false
     }
 }
 ```
 
-### 12.2 优先级（高 → 低）
+内部走 `sh(script: ['docker', 'buildx', 'build', ...], label: 'docker-build:...')`。
 
-1. 业务方 Jenkinsfile 中 `apex { ... }` 内显式配置
-2. 库内置的 `apexConfig{}`
-3. Jenkins 全局属性（Manage Jenkins → System Properties）
-4. 库默认值
+### 11.2 Docker 推送
 
-### 12.3 配置来源
+```groovy
+stage('Push') {
+    apexDocker.push('ghcr.io/acme/app:1.0.0', 'ghcr-creds')
+}
+```
 
-- **代码**：`apexConfig{}` 块
-- **环境变量**：`APEX_REGISTRY` 等
-- **Jenkins 文件**：`apex-ci.yaml`（Pipeline 级配置文件，提交到业务仓）
+**凭据注入**（库不主动管理）：
+
+```groovy
+stage('Push') {
+    withCredentials([usernamePassword(credentialsId: 'registry-creds',
+                                       usernameVariable: 'REG_USER',
+                                       passwordVariable: 'REG_PASS')]) {
+        apexDocker.buildAndPush('registry.local/app:1.0.0')
+    }
+}
+```
+
+### 11.3 Nexus 发布
+
+```groovy
+stage('Publish Maven') {
+    apexPublish('https://nexus.local', 'maven-releases', 'maven2') {
+        maven(['-DskipTests'], 'nexus-deployer') {
+            sh 'mvn deploy --batch-mode'
+        }
+    }
+}
+
+stage('Publish npm') {
+    apexPublish('https://nexus.local', 'npm-private', 'npm') {
+        npm { sh 'npm ci && npm run build'; sh 'npm publish' }
+    }
+}
+
+stage('Publish PyPI') {
+    apexPublish('https://nexus.local', 'pypi-hosted', 'pypi') {
+        pypi('dist') { sh 'python -m build' }
+    }
+}
+
+stage('Upload Tarball') {
+    apexPublish('https://nexus.local', 'raw-hosted', 'raw') {
+        raw('app/1.0.0/release.tgz', 'release.tgz', 'application/gzip')
+    }
+}
+```
+
+### 11.4 外部服务不稳定处理
+
+```groovy
+stage('Publish (unstable external)') {
+    apexRetry.exponential(5, 1000, 2.0) {
+        apexPublish('https://nexus.local', 'maven-releases', 'maven2') {
+            maven(['-DskipTests'], 'nexus-deployer') {
+                sh 'mvn deploy --batch-mode'
+            }
+        }
+    }
+}
+```
 
 ---
 
-## 13. 测试策略
+## 12. 测试策略
 
-### 13.1 单元测试
+### 12.1 测试金字塔
 
-- 框架：**Spock**（`spock-core`）或 **Jenkins PipelineUnit**。
-- 覆盖目标：核心模型（`Pipeline` / `Stage` / `Step` / `AsyncResult` / 各 Builder 配置解析逻辑）。
-- Mock `sh` / `bat` / `readJSON` 等 CPS 步骤。
+```
+        ┌────────────────────┐
+        │   E2E / Sandbox    │  ← 真实 Jenkins 跑 Jenkinsfile-modules
+        ├────────────────────┤
+        │ 集成（MockScript） │  ← LightweightDslTest 覆盖并行/扫描/重试
+        ├────────────────────┤
+        │    单元测试        │  ← JUnit 4 + groovyc
+        └────────────────────┘
+```
 
-### 13.2 集成测试
+### 12.2 单元测试
 
-- **`PipelineUnit`**：在 JVM 内模拟整条 Pipeline，验证 DSL 展开后的 step 序列。
-- **Jenkinsfile Smoke Test**：在真实 Jenkins Sandbox 内跑 `apex { java { ... } }` 的最小用例。
+```bash
+./build.sh
+# 编译 src/ → build/classes/main
+# 编译 test/ → build/classes/test
+# 运行 JUnitCore all *Test.groovy
+```
 
-### 13.3 端到端测试
+### 12.3 `MockScript`
 
-- 库内提供 `test/jenkins/pipelineSmokeTest.groovy`，作为库的 `Jenkinsfile` 默认 stage。
-- 验证：构建一个 `hello-java` / `hello-node` / `hello-python` 示例仓库，跑完整流程。
+```groovy
+class MockScript {
+    List<Map> shCalls = []
+    List<String> echos = []
+    List<Map> parallels = []
 
-### 13.4 静态检查
+    Object sh(Map args) { shCalls << args; return 0 }
+    void echo(String msg) { echos << msg }
+    Object parallel(Map blocks) {
+        parallels << [blocks: blocks]
+        return blocks.collectEntries { k, v -> [(k): v.call()] }
+    }
+    Object timeout(Map args, Closure body) { body.call() }
+    String pwd() { '/tmp/workspace' }
+}
+```
 
-- `npm-groovy-lint`（规则：`/config/groovylintrc.json`）
-- 自定义规则：
-  - `no-eval`
-  - `no-raw-sh`
-  - `no-reflection`
-  - `require-immutable-context`
+### 12.4 集成测试：LightweightDslTest
+
+16 用例覆盖：
+- `scanRunner_usesNativeParallelForMultipleBranches`
+- `scanRunner_singleBranchDoesNotUseParallel`
+- `scanRunner_isolatesExceptionsAcrossBranches`
+- `scanRunner_blocksUntilAllBranchesComplete`
+- `scanRunner_assertPassedRunsGateAfterAllScansDone`
+- `scanRunner_othersPassEvenWhenOneFails`
+- `scanRunner_emitsReporterOutput`
+- `retry_recoversFromTransientExternalServiceError`
+- `retry_givesUpAfterMaxAttempts`
+- `retry_exponentialBackoffActuallyWaits`
+- `javaBuilder_assemblesMavenCommandArray`
+- `dynamicParams_freeAdditionAndRemoval`
+- `ctx_attrsSurviveAcrossStages`
+- `javaBuilder_missingBuildToolFailsFast`
+- ...
+
+### 12.5 真实 Jenkins 集成
+
+```bash
+docker compose -f docker/test-env/docker-compose.yml up -d
+bash docker/test-env/test-it.sh
+```
+
+`test-it.sh` 触发 `Jenkinsfile-modules`（覆盖 apexBuild / apexScan / apexRetry / apexConfig 等所有模块），断言 `BUILD SUCCESS`。
 
 ---
 
-## 14. 发布与版本
+## 13. 配置与通知
 
-### 14.1 版本策略（SemVer）
+### 13.1 配置解析
 
-- `MAJOR`：破坏性 API 变更
-- `MINOR`：向后兼容的新功能 / 新 Builder / 新 Scanner
-- `PATCH`：Bug 修复
+```groovy
+def cfg = apexConfig.fromYaml(readFile('apex-ci.yaml'))
+def cfg2 = apexConfig.fromProperties(readFile('apex-ci.properties'))
+def cfg3 = apexConfig.fromJson(readFile('apex-ci.json'))
 
-### 14.2 兼容性矩阵
+// 闭包式
+def cfg = apexConfig {
+    fromYaml text: readFile('apex-ci.yaml')
+}
+
+// 取值
+def app = cfg.getString('app.name', 'default-app')
+def jdk = cfg.getInt('java.jdk', 17)
+def platforms = cfg.getList('docker.platforms', ['linux/amd64'])
+```
+
+**优先级**：
+
+```
+环境变量 > 仓库 apex-ci.yaml > 业务方 Jenkinsfile 内 apexConfig > 内置默认
+```
+
+### 13.2 邮件通知
+
+```groovy
+post {
+    always {
+        apexNotify(to: ['dev@local'],
+                   subject: "Build #${env.BUILD_NUMBER}",
+                   body: "Status: ${currentBuild.currentResult}")
+    }
+}
+```
+
+---
+
+## 14. 错误模型
+
+```groovy
+class ApexCIException extends RuntimeException {
+    String code
+    List<String> details
+    ApexCIException(String msg, Throwable cause = null, String code = null, List<String> details = null) { ... }
+}
+
+class BuildException extends ApexCIException { ... }
+class ScanException extends ApexCIException { ... }
+class ConfigException extends ApexCIException { ... }
+```
+
+**异常分类**：
+
+| 异常 | 触发条件 |
+| --- | --- |
+| `ApexCIException` | 通用：未指定 language、参数缺失、命令白名单拦截等 |
+| `BuildException` | 构建阶段错误：buildx 失败、参数解析失败 |
+| `ScanException` | 扫描门禁失败：`Scanner gate failed: sast:high=2; ...` |
+| `ConfigException` | 配置解析失败：YAML 格式错误、键缺失 |
+
+---
+
+## 15. 发布与兼容性
+
+### 15.1 版本
+
+遵循 [SemVer 2.0.0](https://semver.org/)。
 
 | 库版本 | Jenkins LTS | JDK | Pipeline Plugin |
 | --- | --- | --- | --- |
-| 1.0.x | 2.426.x+ | 11 / 17 / 21 | workflow-aggregator ≥ 596 |
+| 2.0.x | 2.470.x+ | 17 / 21 | workflow-aggregator ≥ 650 |
+| 1.x | 2.426.x+ | 11 / 17 / 21 | workflow-aggregator ≥ 596 |
 
-### 14.3 Tag 流程
+### 15.2 发布流程
 
-1. PR → `main`：CI 全绿后自动合并
-2. 维护者打 tag：`vX.Y.Z`（含 `CHANGELOG.md` 同步）
-3. `.github/workflows/release.yml` 发布 GitHub Release + Jenkins Update Center 元数据
+1. 切到 `main`，确保最新
+2. `./build.sh`（全绿）
+3. `bash docker/test-env/test-it.sh`（沙箱回放）
+4. 更新 `CHANGELOG.md`（如有）
+5. `git tag -a v2.0.0 -m "v2.0.0"`
+6. `git push origin v2.0.0`
+7. 通知 `#apex-ci-announce`
 
-### 14.4 业务方引用
+### 15.3 兼容性策略
+
+- **偶数 MAJOR 长期维护**（≥ 18 个月）
+- **奇数 MAJOR 仅维护至下个偶数发布**
+- **破坏性变更** 必须新开 MAJOR
+- **新增全局变量** 不算破坏性
+- **修改现有入口签名** 算破坏性（需 deprecate → 移除 → 2 个 MAJOR 周期）
+
+---
+
+## 16. 文档组织
+
+| 文档 | 目标读者 | 内容 |
+| --- | --- | --- |
+| `docs/design.md` | 架构师 / 库作者 | 架构、决策、模块划分、v1→v2 演进 |
+| `docs/user-guide.md` | Jenkinsfile 编写者 | 快速上手、API、典型模式、迁移 |
+| `docs/developer-guide.md` | 库维护者 / 贡献者 | 扩展点、测试、发布、沙箱、调错 |
+| `README.md` | 全员 | 概览、能力、链接 |
+
+---
+
+## 17. 附录：典型 Pipeline 示例
+
+### 17.1 最小流水线
 
 ```groovy
-@Library('apex-ci-library@1.0.0') _    // 固定版本（推荐）
-@Library('apex-ci-library@main') _     // 主干（仅开发）
+@Library('apex-ci-library@2.0') _
+
+node {
+    stage('Build') { apexBuild('java') { jdk = 17 } }
+    stage('Test')  { sh 'mvn test' }
+}
+```
+
+### 17.2 完整流水线（PR 门禁）
+
+```groovy
+@Library('apex-ci-library@2.0') _
+
+pipeline {
+    agent any
+    options { timeout(time: 30, unit: 'MINUTES'); ansiColor('xterm') }
+    stages {
+        stage('Build')    { steps { apexBuild('java') { jdk = 17; goals = ['clean', 'verify'] } } }
+        stage('Lint')     { steps { sh 'npm run lint' } }
+        stage('Tests')    { steps { sh 'mvn -B test' } }
+        stage('Security') { steps {
+            def r = apexScan {
+                sast    { sh 'sonar-scanner -Dsonar.qualitygate.wait=true' }
+                sca     { sh 'snyk test --json' }
+                container('app:1.0.0') { sh 'trivy image app:1.0.0' }
+                generic('secrets') { sh 'gitleaks detect --source .' }
+            }
+            r.failOn = ['high', 'critical']
+            r.assertPassed()
+        } }
+    }
+}
+```
+
+### 17.3 Monorepo 多语言并行
+
+```groovy
+node {
+    stage('Build & Test') {
+        parallel(
+            'core':   { apexBuild('java')   { jdk = 17; goals = ['-pl', 'core', 'clean', 'verify'] } },
+            'api':    { apexBuild('java')   { jdk = 17; goals = ['-pl', 'api',  'clean', 'verify'] } },
+            'portal': { apexBuild('node')   { commands = ['ci', 'test', 'build'] } },
+            'ml':     { apexBuild('python') { commands = ['pytest', 'build'] } }
+        )
+    }
+}
+```
+
+### 17.4 外部服务不稳定处理
+
+```groovy
+stage('Publish (with retry)') {
+    apexRetry.exponential(5, 1000, 2.0) {
+        apexPublish('https://nexus.local', 'maven-releases', 'maven2') {
+            maven(['-DskipTests'], 'nexus-deployer') {
+                sh 'mvn deploy --batch-mode'
+            }
+        }
+    }
+}
 ```
 
 ---
 
-## 15. 安全与合规
+## 18. v1.0 历史参考与差异对比
 
-- 库**自身**仓库中**禁止**提交任何凭据。
-- 所有 Scanner 默认在**只读模式**下运行。
-- 容器构建阶段强制 `DOCKER_BUILDKIT=1` + 多阶段构建。
-- 上传产物到 APEX 内部 Artifactory，**禁止**推到公网。
-- OIDC / Vault 凭据：通过 Jenkins Credentials Plugin 注入。
-- 审计日志：所有 `sh` 命令通过 `Logger.groovy` 记录到 `build.log`。
+### 18.1 触发原因
 
----
+v1.0 在真实 Jenkins 集成测试中暴露：
 
-## 16. 可观测性
+1. **CPS 兼容性问题**：`Pipeline` / `Stage` / `Step` 三层自定义抽象与 Jenkins CPS 转换器冲突，业务方写闭包时容易踩坑（`@NonCPS` 误用、closure 变量捕获异常等）。
+2. **冗余线程模型**：`AsyncResult` / `ResultAggregator` 模拟 Future 模式，但 Jenkins 原生 `parallel` 已天然支持并发 + 异常隔离，徒增复杂度。
+3. **DSL 学习成本**：业务方需要学一套"apex DSL"才能用，Jenkinsfile 与官方文档脱节，IDE 跳转差。
+4. **测试难**：v1.0 的强类型对象在 PipelineUnit 下难以 mock。
+5. **调试难**：业务方报障时，需要追踪三层自定义抽象。
 
-- **构建指标**：构建时长、测试通过率、扫描漏洞数、镜像大小 → 推送 Prometheus Pushgateway
-- **链路追踪**：每个 Step 携带 `traceId`，由 OTel SDK 写入
-- **日志**：JSON 格式（`build.log.json`），便于 ELK 消费
-- **报告**：通过 `reporters/` 模块生成 HTML / JUnit XML / Allure 报告
+### 18.2 模块变更
 
----
+| 类别 | v1.0 | v2.0 | 变化 |
+| --- | --- | --- | --- |
+| 流程编排 | 自定义 `Pipeline{ stages{} }` | Jenkins 原生 `node { stage { ... } }` | 移除自定义层 |
+| 并发 | 自建线程池 + AsyncResult | Jenkins 原生 `parallel(branches)` | 移除 AsyncResult |
+| 异常隔离 | `try/catch` + ResultAggregator | 每个 parallel branch 内置 `try/catch` | 简化 |
+| 异步 | Future 风格 await/tryGet | 移除（parallel 阻塞即可） | 移除 |
+| 扫描 | `SastScanner` / `ScaScanner` 继承 `AbstractScanner` | 直接用 `apexScan { sast { ... } }` 闭包 | 简化 |
+| 上下文 | 不可变 `PipelineContext` + withConfig | 可变 attrs + withEnv | 简化 |
+| Builder | 实现 `Step` 接口 | `execute(ctx, body, opts)` 一步完成 | 简化 |
+| 配置 | `PipelineConfig` / `BuildConfig` 强类型 | 纯 `apexConfig` 解析 + map | 简化 |
+| 上报 | `HtmlReporter` / `JunitReporter` / `SummaryReporter` | 仅保留 `ConsoleReporter` | 精简 |
+| 通知 | `SlackNotifier` / `EmailNotifier` / `TeamsNotifier` | 仅保留 `EmailNotifier` | 精简 |
+| 模板 | `resources/templates/*.tpl` | 移除（业务方自管） | 移除 |
 
-## 17. 实施路线图
+### 18.3 保留与简化
 
-| 阶段 | 内容 | 交付 |
+| 模块 | v1.0 | v2.0 |
 | --- | --- | --- |
-| **P0 - 骨架** | 仓库结构 + Pipeline/Stage/Step 模型 + `apex.groovy` + Lint | v0.1.0 |
-| **P1 - 核心构建** | `JavaBuilder` + `NodeBuilder` + 动态参数 `DynamicParams` | v0.3.0 |
-| **P2 - Docker & Nexus** | `DockerBuilder` (BuildKit/multi-arch) + `NexusClient` + `ArtifactPublisher` | v0.5.0 |
-| **P3 - 扫描** | `SastScanner` + `ScaScanner` + `AsyncResult` 异步模型 | v0.6.0 |
-| **P4 - 多语言** | `PythonBuilder` + `GoBuilder` + `DotnetBuilder` | v0.7.0 |
-| **P5 - 高级** | 自动检测 + 模板系统 + 报告聚合 | v0.9.0 |
-| **P6 - GA** | 文档 + 培训 + 试点项目迁移 | v1.0.0 |
+| `PipelineContext` | 不可变、强类型 | 轻量容器、attrs 可写 |
+| `Retry` / `Sleeper` | 已实现 | 保留，新增 `JenkinsSleeper` |
+| `DynamicParams` | 已实现 | 保留 |
+| `Sandbox` | 已实现 | 保留 |
+| `LibraryConfig` | 已实现 | 保留 |
+| `DockerBuilder` / `DockerPusher` | 已实现 | 保留 |
+| `NexusClient` / `ArtifactPublisher` | 已实现 | 保留 |
+| `EmailNotifier` | 已实现 | 保留 |
 
----
+### 18.4 新增
 
-## 18. 风险与缓解
+- **`ScanRunner`**：替代 `ScannerCollector` + `SastScanner` / `ScaScanner` / `ContainerScanner`，走 Jenkins 原生 `parallel`，支持 `sast / sca / container / generic` 四种注册方法。
+- **`ConsoleReporter`**：替代分散的日志逻辑，扫描完成后统一输出汇总。
+- **`Sleeper` / `JenkinsSleeper` / `NoOpSleeper`**：抽象睡眠，便于单测注入 mock。
 
-| 风险 | 影响 | 缓解 |
+### 18.5 API 差异
+
+| 旧 API（v1.x） | 新 API（v2.0） | 备注 |
 | --- | --- | --- |
-| Sandbox 限制导致部分功能无法实现 | 阻塞 P2 | 提供 `apexCI.unsafe` 关闭开关；优先用纯 Groovy |
-| 多语言构建参数差异大 | Builder 维护成本高 | Builder 注册 + 单元测试覆盖；优先支持 Top 5 语言 |
-| 异步扫描结果丢失 | 门禁失效 | 强约束：所有 AsyncResult 必须有 timeout；CI 阶段兜底回收 |
-| 库版本碎片化 | 业务方升级困难 | 强制 SemVer + LTS 分支（`1.x`、`2.x` 长期维护） |
-| Jenkins 升级破坏 API | 流水线停摆 | 兼容性矩阵自动化测试（`docs/compatibility-matrix.md`） |
+| `apex { stages { stage { java { } } } }` | `node { stage { apexBuild('java') { } } }` | 走原生 |
+| `apex.startScan {}` / `apex.collectScans()` | `apexScan { ... }` 合并 | 同步 + 门禁 |
+| `apex.gate(results, policy: 'high+')` | `runner.assertPassed()` | 设置 `failOn` |
+| `ScannerRegistry` | 移除 | 闭包组合替代 |
+| `apex.detectLanguage()` | `BuilderFactory.autoDetect(...)` | 自动检测 |
+| `apexNexus {}` | `apexPublish(...)` | 同名 |
+| `apexContext.vars.team` | `apexCtx.getAttr('team')` | attrs 命名 |
+| 自建线程池并发 | Jenkins 原生 `parallel` | 沙箱安全 |
+
+### 18.6 收益
+
+- **更短**：业务方 Jenkinsfile 减少 30%~50% 行数
+- **更稳**：少一处 CPS 转换，Jenkins 升级不易破坏
+- **更兼容**：与官方文档 1:1 对应
+- **更可读**：Jenkinsfile 像普通 Groovy
+- **更可测**：核心类直接用 `MockScript` 测，无需 PipelineUnit
+- **更可调试**：业务方报障时，问题在原生日志中已能定位
+
+### 18.7 迁移步骤
+
+1. **替换入口**：`apex { ... }` → `node { ... }` 或保留 `apex { ... }` 仅注入 ctx。
+2. **替换 stage**：`stages { stage { java { jdk = 21 } } }` → `stage('Build') { apexBuild('java') { jdk = 17 } }`。
+3. **替换扫描**：`apex.startScan { sast { ... } }` → `apexScan { sast { ... } }`。
+4. **替换门禁**：`apex.gate(results, ...)` → `runner.assertPassed()`。
+5. **跑测试**：`bash build.sh` + `bash docker/test-env/test-it.sh` 验证。
 
 ---
 
 ## 19. 参考
 
-- Jenkins Shared Libraries 官方文档：<https://www.jenkins.io/doc/book/pipeline/shared-libraries/>
+- Jenkins Shared Libraries：<https://www.jenkins.io/doc/book/pipeline/shared-libraries/>
 - Pipeline Development Tools：<https://www.jenkins.io/doc/book/pipeline/development/>
-- PipelineUnit：<https://github.com/jenkinsci/pipeline-unit>
+- Pipeline Syntax：<https://www.jenkins.io/doc/book/pipeline/syntax/>
+- JUnit 4：<https://junit.org/junit4/>
 - 内部 APEX 平台文档：`confluence://apex/ci/standards`
-
----
-
-**审批 / 评审**
-
-| 角色 | 姓名 | 日期 |
-| --- | --- | --- |
-| 架构 Owner | | |
-| 安全 Owner | | |
-| 平台 Owner | | |

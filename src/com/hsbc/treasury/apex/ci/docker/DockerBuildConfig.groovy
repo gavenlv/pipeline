@@ -24,6 +24,7 @@ import com.hsbc.treasury.apex.ci.core.DynamicParams
 class DockerBuildConfig implements Serializable {
     private static final long serialVersionUID = 1L
 
+    String imageRef                              // 必填：完整 image:tag
     String dockerfile = 'Dockerfile'
     String context = '.'
     List<String> tags = ['latest']
@@ -37,7 +38,24 @@ class DockerBuildConfig implements Serializable {
     String registry
     boolean pushOnBuild = false
     String credentialsId
-    DynamicParams params
+    DynamicParams params = new DynamicParams()
+
+    void setParams(DynamicParams p) { this.params = (p != null) ? p : new DynamicParams() }
+
+    Object params(Closure body) {
+        if (this.params == null) this.params = new DynamicParams()
+        body.delegate = this.params
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body()
+        return this
+    }
+
+    void setParams(Closure body) {
+        if (this.params == null) this.params = new DynamicParams()
+        body.delegate = this.params
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body()
+    }
 
     static DockerBuildConfig fromClosure(Closure body) {
         def cfg = new DockerBuildConfig()
@@ -47,6 +65,7 @@ class DockerBuildConfig implements Serializable {
         body()
         if (cfg.tags == null) cfg.tags = ['latest']
         if (cfg.platforms == null) cfg.platforms = ['linux/amd64']
+        if (cfg.params == null) cfg.params = new DynamicParams()
         return cfg
     }
 }

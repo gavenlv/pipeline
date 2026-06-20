@@ -1,37 +1,22 @@
 package com.hsbc.treasury.apex.ci.builders
 
 import com.hsbc.treasury.apex.ci.core.PipelineContext
-import com.hsbc.treasury.apex.ci.core.Step
 import com.hsbc.treasury.apex.ci.core.DynamicParams
-import com.hsbc.treasury.apex.ci.errors.ApexCIException
 import com.hsbc.treasury.apex.ci.utils.Util
 
 /**
- * Builder 抽象基类。
- * - 提供通用 language / sandbox-safe 行为
- * - 子类实现 detect / getLanguage
- * - build(ctx, body) 解析闭包配置为具体 Config
+ * Builder 抽象基类（轻量版）。
+ * - 不再实现 Step 接口
+ * - 抽象 execute(ctx, body, opts)，子类负责把闭包解析为 cfg 并执行
  */
-
-abstract class AbstractBuilder implements Step<Object>, Serializable {
+abstract class AbstractBuilder implements Serializable {
     private static final long serialVersionUID = 1L
-
-    @Override
-    String getName() { return "build-${getLanguage()}".toString() }
-
-    @Override
-    boolean isSandboxSafe() { return true }
-
-    @Override
-    Object run(PipelineContext ctx) { return execute(ctx) }
 
     abstract String getLanguage()
     abstract boolean detect(File projectDir)
-    /** 主流程：子类的 Config 解析 + shell 执行 */
-    abstract Object execute(PipelineContext ctx)
-
-    /** 解析 config 闭包为具体 Config 对象（子类覆盖） */
     abstract Object parseConfig(Closure body)
+    /** 主流程：子类的 Config 解析 + shell 执行 */
+    abstract Object execute(PipelineContext ctx, Closure body, Map opts = [:])
 
     /** 解析的 cmd 数组辅助：把 DynamicParams 注入到基础 cmd 末尾 */
     protected List<String> mergeDynamicParams(List<String> base, DynamicParams params) {
@@ -50,7 +35,7 @@ abstract class AbstractBuilder implements Step<Object>, Serializable {
         def head = cmd[0]
         if (head in ['mvn', 'gradle', 'npm', 'yarn', 'pnpm', 'go', 'python', 'pip', 'docker', 'sonar-scanner']) {
             def newCmd = new ArrayList<String>()
-            newCmd << (head + '.bat' == head + '.bat' ? head + '.cmd' : head + '.bat')
+            newCmd << (head + '.cmd')
             newCmd.addAll(cmd.subList(1, cmd.size()))
             return newCmd
         }

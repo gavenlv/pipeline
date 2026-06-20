@@ -28,7 +28,36 @@ class JavaBuildConfig implements Serializable {
     String mvnExecutable = 'mvn'
     String gradleExecutable = 'gradle'
     boolean skipTests = false
-    DynamicParams params
+    DynamicParams params = new DynamicParams()
+
+    /**
+     * 兼容两种调用方式：
+     *   1) params = new DynamicParams(...)
+     *   2) params { flag(...); property(...) }
+     *      → 闭包形式：复用现有对象，避免覆盖
+     */
+    void setParams(DynamicParams p) { this.params = (p != null) ? p : new DynamicParams() }
+
+    /**
+     * 直接接受 Closure 参数的方法。
+     * 由于 Groovy 的属性名解析优先级，"params { ... }" 写法在某些场景下
+     * 会被错误地解析为对 DynamicParams 实例的 methodMissing 调用。
+     * 我们额外提供一个显式方法，确保 DSL 能稳定工作。
+     */
+    Object params(Closure body) {
+        if (this.params == null) this.params = new DynamicParams()
+        body.delegate = this.params
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body()
+        return this
+    }
+
+    void setParams(Closure body) {
+        if (this.params == null) this.params = new DynamicParams()
+        body.delegate = this.params
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body()
+    }
 
     static JavaBuildConfig fromClosure(Closure body) {
         def cfg = new JavaBuildConfig()
@@ -39,6 +68,7 @@ class JavaBuildConfig implements Serializable {
         if (cfg.goals == null) cfg.goals = ['clean', 'package']
         if (cfg.cliOptions == null) cfg.cliOptions = []
         if (cfg.properties == null) cfg.properties = [:]
+        if (cfg.params == null) cfg.params = new DynamicParams()
         return cfg
     }
 }

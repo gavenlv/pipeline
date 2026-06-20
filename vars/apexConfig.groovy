@@ -1,37 +1,39 @@
 // =========================================================================
-// apexConfig — 读取静态库配置
+// apexConfig — 配置解析（轻量版）
 //
-//   def cfg = apexConfig { fromYaml(file('apex.yaml').text) }
+// 用法：
+//   def cfg = apexConfig.fromYaml(readFile('apex.yaml'))
+//   def cfg = apexConfig.fromProperties(readFile('apex.properties'))
+//   def cfg = apexConfig.fromJson(readFile('apex.json'))
+//
+// 或 builder 形式：
+//   def cfg = apexConfig {
+//       fromYaml text: readFile('apex.yaml')
+//   }
 // =========================================================================
 import com.hsbc.treasury.apex.ci.config.LibraryConfig
-import com.hsbc.treasury.apex.ci.errors.ConfigException
+import com.hsbc.treasury.apex.ci.errors.ApexCIException
+
+this.metaClass.fromYaml = { String t -> LibraryConfig.fromYamlLite(t) }
+this.metaClass.fromProperties = { String t -> LibraryConfig.fromProperties(t) }
+this.metaClass.fromJson = { String t -> LibraryConfig.fromJson(t) }
+this.metaClass.emptyConfig = { LibraryConfig.empty() }
 
 def call(Closure body) {
-    Object script = this
     String text = null
-    String format = 'properties'    // properties | yaml | json
-    String path = null
-
+    String format = 'properties'
     body.delegate = [
-        setText: { String t -> text = t },
-        fromFile: { String p -> path = p },
+        fromYaml:       { String t -> text = t; format = 'yaml' },
         fromProperties: { String t -> text = t; format = 'properties' },
-        fromYaml: { String t -> text = t; format = 'yaml' },
-        fromJson: { String t -> text = t; format = 'json' },
-        getText: { -> text }
+        fromJson:       { String t -> text = t; format = 'json' }
     ]
     body.resolveStrategy = Closure.DELEGATE_FIRST
     body()
-
-    if (text == null && path != null && script != null) {
-        text = script.readFile(path)
-    }
-    if (text == null) throw new ConfigException("apexConfig requires text or file path")
-
+    if (text == null) throw new ApexCIException("apexConfig: must call fromYaml/fromProperties/fromJson")
     switch (format) {
-        case 'properties': return LibraryConfig.fromProperties(text)
         case 'yaml':       return LibraryConfig.fromYamlLite(text)
         case 'json':       return LibraryConfig.fromJson(text)
+        case 'properties': return LibraryConfig.fromProperties(text)
         default:           return LibraryConfig.fromProperties(text)
     }
 }

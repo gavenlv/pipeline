@@ -1,0 +1,199 @@
+// =========================================================================
+// Jenkinsfile-mixed — 混合场景：build + 并行 build + 等待 scan + 自动版本
+//
+// 目标：在一条流水线里串起所有 4 种典型场景，验证：
+//   1) 自动版本管理（apexVersion.auto）-> 写入 env
+//   2) 单语言 build（apexBuild('java')）-> 产出 jar
+//   3) 并行多语言 build（native parallel + apexBuild）
+//   4) 等待扫描结果（apexScan -> runner.run() -> assertPassed）
+//   5) 失败重试（apexRetry.linear）模拟外部服务
+//
+// 该 Jenkinsfile 是端到端综合测试，模拟真实业务方一次性使用所有能力。
+// 注意：本文件不 import 任何 com.hsbc.* 类，只使用 vars/ 入口。
+// =========================================================================
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'BASE_VERSION',  defaultValue: '1.0.0',    description: 'Base semver')
+        string(name: 'BUMP_TYPE',     defaultValue: 'minor',    description: 'patch|minor|major|release|prerelease')
+        booleanParam(name: 'RUN_PARALLEL',  defaultValue: true, description: 'Run multi-language parallel build')
+        booleanParam(name: 'RUN_SCAN',      defaultValue: true, description: 'Run wait-for-scan stage')
+    }
+
+    environment {
+        PIPELINE_ROOT = '/var/jenkins_home/pipeline'
+        BUILD_META    = 'jenkins-mixed'
+    }
+
+    stages {
+
+        // ------------------ 1) 自动版本管理 ------------------
+        stage('1. Auto Version') {
+            steps {
+                script {
+                    env.BUILD_VERSION = params.BASE_VERSION
+                    env.BUMP_TYPE     = params.BUMP_TYPE
+                    def v = apexVersion.auto([
+                        BUILD_VERSION: env.BUILD_VERSION,
+                        BUMP_TYPE    : env.BUMP_TYPE,
+                        BUILD_META   : env.BUILD_META,
+                    ])
+                    env.APP_VERSION = v
+                    echo "Auto version -> ${v}".toString()
+
+                    // 比较/解析
+                    def cur = apexVersion.parse(params.BASE_VERSION)
+                    def nxt = apexVersion.parse(v.split('\\+')[0].split('-')[0])
+                    echo "current=${cur} next=${nxt} (next > current = ${nxt >= cur})".toString()
+                    if (nxt < cur) error "Auto version did not bump up: ${cur} -> ${nxt}"
+                }
+            }
+        }
+
+        // ------------------ 2) 单一类型 build ------------------
+        stage('2. Single Build (Java)') {
+            steps {
+                dir("${env.PIPELINE_ROOT}/docker/test-env/samples/java".toString()) {
+                    script {
+                        apex {
+                            apexBuild('java') {
+                                jdk       = 11
+                                buildTool = 'maven'
+                                goals     = ['clean', 'verify']
+                                params {
+                                    flag('--batch-mode')
+                                    flag('-DskipITs')
+                                    property('maven.javadoc.skip', 'true')
+                                    property('project.build.outputTimestamp', '1970-01-01T00:00:00Z')
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------ 3) 并行多语言 build ------------------
+        stage('3. Parallel Multi-Language Build') {
+            when { expression { return params.RUN_PARALLEL } }
+            steps {
+                script {
+                    def branches = [:]
+
+                    branches['java'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/java".toString()) {
+                            apexBuild('java') {
+                                jdk = 11; buildTool = 'maven'
+                                goals = ['-B', '-q', 'test']
+                                params { flag('--batch-mode') }
+                            }
+                        }
+                    }
+                    branches['node'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/node".toString()) {
+                            apexBuild('node') {
+                                packageManager = 'npm'
+                                scripts        = ['install', 'test']
+                                params { flag('--no-audit'); flag('--no-fund') }
+                            }
+                        }
+                    }
+                    branches['python'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/python".toString()) {
+                            apexBuild('python') {
+                                venv     = false
+                                commands = ['-m', 'pip', 'install', '--quiet', 'pytest']
+                            }
+                            sh label: 'pytest', script: '''
+                                python3 -m pip install --quiet pytest || true
+                                python3 -m pytest -q test_apex_sample.py
+                            '''
+                        }
+                    }
+                    branches['go'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/go".toString()) {
+                            sh label: 'go-init', script: '''
+                                set -e
+                                if [ ! -f go.mod ]; then
+                                  mkdir -p .
+                                  go mod init github.com/apex/sample-go >/dev/null 2>&1 || true
+                                fi
+                                echo 'package main' > main.go
+                                echo 'func main(){}' >> main.go
+                            '''
+                            apexBuild('go') {
+                                commands    = ['build', './...']
+                                mainPackage = './...'
+                            }
+                        }
+                    }
+                    echo "Launching ${branches.size()} parallel build branches".toString()
+                    parallel(branches)
+                }
+            }
+        }
+
+        // ------------------ 4) 等待扫描结果 ------------------
+        stage('4. Wait for Scan') {
+            when { expression { return params.RUN_SCAN } }
+            steps {
+                script {
+                    int sleepMs = 600
+                    long started = System.currentTimeMillis()
+
+                    def runner = apexScan {
+                        sast    { -> Thread.sleep(sleepMs); return [scanner: 'sast', status: 'OK', high: 0, medium: 1] }
+                        sca     { -> Thread.sleep(sleepMs); return [scanner: 'sca',  status: 'OK', high: 0] }
+                        container('apex-sample:1.0.0') { -> Thread.sleep(sleepMs); return [scanner: 'container', status: 'OK', high: 0] }
+                    }
+                    runner.failOn = ['high', 'critical']
+                    def results = runner.run()
+                    long elapsed = System.currentTimeMillis() - started
+                    echo "Scanners finished in ${elapsed} ms (expected ~${sleepMs}*N parallel)".toString()
+                    results.each { n, sr -> echo "  ${n.padRight(20)} status=${sr.status} high=${sr.high}".toString() }
+                    if (elapsed > 3 * sleepMs) {
+                        error "Scanners took ${elapsed} ms which suggests they did NOT run in parallel"
+                    }
+                    runner.assertPassed(results)
+                }
+            }
+        }
+
+        // ------------------ 5) 外部服务重试（验证 apexRetry） ------------------
+        stage('5. Retry on Transient Failure') {
+            steps {
+                script {
+                    int attempt = 0
+                    def result = apexRetry.linear(5, 100) { ->
+                        attempt++
+                        if (attempt < 3) throw new RuntimeException("simulated 502 (attempt ${attempt})".toString())
+                        return 'recovered'
+                    }
+                    echo "Retry recovered: ${result} after ${attempt} attempts".toString()
+                    if (result != 'recovered' || attempt != 3) {
+                        error "Retry semantics wrong: result=${result} attempts=${attempt}".toString()
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                env.APP_VERSION_FINAL = env.APP_VERSION ?: 'n/a'
+            }
+            echo "==============================".toString()
+            echo "  MIXED PIPELINE SUMMARY".toString()
+            echo "  APP_VERSION=${env.APP_VERSION_FINAL}".toString()
+            echo "==============================".toString()
+        }
+    }
+}

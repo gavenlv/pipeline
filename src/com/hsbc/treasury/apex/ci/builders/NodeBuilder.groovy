@@ -22,14 +22,10 @@ class NodeBuilder extends AbstractBuilder implements Serializable {
     Object parseConfig(Closure body) { return NodeBuildConfig.fromClosure(body) }
 
     @Override
-    Object execute(PipelineContext ctx) {
-        throw new BuildException("Use execute(ctx, body).")
-    }
-
-    Object execute(PipelineContext ctx, Closure body) {
+    Object execute(PipelineContext ctx, Closure body, Map opts = [:]) {
         NodeBuildConfig cfg = (NodeBuildConfig) parseConfig(body)
         validate(cfg)
-        ctx.script?.echo("==> [Node:${cfg.packageManager}] scripts=${cfg.scripts}")
+        ctx?.log("==> [Node:${cfg.packageManager}] scripts=${cfg.scripts}")
 
         List<String> cmd = [cfg.packageManager]
         cfg.scripts.each { s ->
@@ -39,11 +35,11 @@ class NodeBuilder extends AbstractBuilder implements Serializable {
         cmd = platformAdapt(cmd, ctx)
 
         if (cfg.registry) {
-            ctx.script?.echo("[Node] using registry: ${cfg.registry}")
+            ctx?.log("[Node] using registry: ${cfg.registry}")
         }
 
         com.hsbc.treasury.apex.ci.utils.Sandbox.runShell(ctx, cmd, "node-${cfg.packageManager}".toString())
-        ctx.setAttr("node.build.pm", cfg.packageManager)
+        ctx?.setAttr("node.build.pm", cfg.packageManager)
         return ['pm': cfg.packageManager, 'scripts': cfg.scripts]
     }
 

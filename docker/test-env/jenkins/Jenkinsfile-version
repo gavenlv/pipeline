@@ -1,0 +1,107 @@
+// =========================================================================
+// Jenkinsfile-version — 自动版本管理（auto upgrade）场景
+//
+// 目标：验证 apexVersion 在 Jenkinsfile 中：
+//   1) 显式 bump（patch / minor / major / release / prerelease）
+//   2) 从环境变量自动 auto() 模式
+//   3) SemVer parse / max / min
+//   4) 版本比较与升级判定
+//
+// 用法：通过参数 BUMP_TYPE 选择不同的 bump 路径。
+// =========================================================================
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 10, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'BASE_VERSION',  defaultValue: '1.2.3',       description: 'Base semver to bump from')
+        string(name: 'BUMP_TYPE',     defaultValue: 'patch',       description: 'patch | minor | major | release | prerelease')
+        string(name: 'PRE_TAG',       defaultValue: 'rc.1',         description: 'Pre-release tag (used by prerelease)')
+        string(name: 'BUILD_META',    defaultValue: 'jenkins',      description: 'Build metadata (e.g. short commit)')
+    }
+
+    stages {
+        stage('Explicit Bump') {
+            steps {
+                script {
+                    def pair = apexVersion.bump(params.BASE_VERSION, params.BUMP_TYPE) {
+                        buildMeta      = params.BUILD_META
+                        preReleaseTag  = params.PRE_TAG
+                    }
+                    def next = pair[0]
+                    def mgr  = pair[1]
+                    env.APP_VERSION = next
+                    echo "Explicit bump: ${params.BASE_VERSION} --${params.BUMP_TYPE}--> ${next}".toString()
+                    echo "Manager state: base=${mgr.base} bump=${mgr.bump} pre=${mgr.preReleaseTag} meta=${mgr.buildMeta}".toString()
+                }
+            }
+        }
+
+        stage('Auto from env') {
+            steps {
+                script {
+                    env.BUILD_VERSION = '2.0.0'
+                    env.BUMP_TYPE     = 'minor'
+                    env.BUILD_META    = 'auto-stage'
+                    // 显式传 env（CPS 沙箱下从 binding 拉 env 不可靠）
+                    String autoV = apexVersion.auto([
+                        BUILD_VERSION: env.BUILD_VERSION,
+                        BUMP_TYPE    : env.BUMP_TYPE,
+                        BUILD_META   : env.BUILD_META,
+                    ])
+                    echo "Auto resolved: ${autoV}".toString()
+                }
+            }
+        }
+
+        stage('Parse + Compare') {
+            steps {
+                script {
+                    def a = apexVersion.parse('1.2.3-rc.1')
+                    def b = apexVersion.parse('1.2.3')
+                    def c = apexVersion.parse('1.2.4')
+                    def newer  = apexVersion.max(a, b)
+                    def older  = apexVersion.min(a, b)
+                    def latest = apexVersion.max([a, b, c])
+                    echo "max(1.2.3-rc.1, 1.2.3) = ${newer}".toString()
+                    echo "min(1.2.3-rc.1, 1.2.3) = ${older}".toString()
+                    echo "max([rc.1, 1.2.3, 1.2.4]) = ${latest}".toString()
+                    if (older != a) error 'min() should return the pre-release'
+                    if (latest != c) error 'max() should return 1.2.4'
+                }
+            }
+        }
+
+        stage('Upgrade Eligibility') {
+            steps {
+                script {
+                    def current = apexVersion.parse('1.2.3')
+                    def latest  = apexVersion.parse('1.3.0')
+                    def pre     = apexVersion.parse('1.3.0-rc.1')
+
+                    boolean canUpgrade = latest > current
+                    boolean preIsPre   = pre < latest && pre > current
+                    echo "current=${current} latest=${latest} pre=${pre}".toString()
+                    echo "canUpgrade(current->latest)=${canUpgrade}".toString()
+                    echo "pre is pre-release of latest=${preIsPre}".toString()
+                    if (!canUpgrade) error 'Latest should be greater than current'
+                    if (!preIsPre)   error 'Pre-release 1.3.0-rc.1 should be < 1.3.0 and > 1.2.3'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                env.APP_VERSION_FINAL = env.APP_VERSION ?: 'unset'
+            }
+            echo "Final APP_VERSION=${env.APP_VERSION_FINAL}".toString()
+        }
+    }
+}

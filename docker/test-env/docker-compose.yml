@@ -56,15 +56,23 @@ services:
       - 1.1.1.1
     volumes:
       - jenkins-data:/var/jenkins_home
-      # Pre-seed the global pipeline library source from host
-      - ../../vars:/var/jenkins_home/casc_libs/apex-ci-library/vars:ro
-      - ../../src:/var/jenkins_home/casc_libs/apex-ci-library/src:ro
-      - ../../resources:/var/jenkins_home/casc_libs/apex-ci-library/resources:ro
+      # Pre-seed the global pipeline library source from host.
+      # Mounted RW so apex-entrypoint.sh can commit host-side changes
+      # into the library's git repo (Jenkins reads from committed state).
+      - ../../vars:/var/jenkins_home/casc_libs/apex-ci-library/vars
+      - ../../src:/var/jenkins_home/casc_libs/apex-ci-library/src
+      - ../../resources:/var/jenkins_home/casc_libs/apex-ci-library/resources
       # JCasC config + custom entrypoint + module test pipeline
       - ./jenkins/jenkins.yaml:/var/jenkins_home/casc/jenkins.yaml:ro
       - ./jenkins/apex-entrypoint.sh:/usr/local/bin/apex-entrypoint.sh:ro
       - ./jenkins/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
       - ./jenkins/Jenkinsfile-modules:/var/jenkins_home/Jenkinsfile-modules:ro
+      - ./jenkins/Jenkinsfile-build-java:/var/jenkins_home/Jenkinsfile-build-java:ro
+      - ./jenkins/Jenkinsfile-parallel-build:/var/jenkins_home/Jenkinsfile-parallel-build:ro
+      - ./jenkins/Jenkinsfile-wait-scan:/var/jenkins_home/Jenkinsfile-wait-scan:ro
+      - ./jenkins/Jenkinsfile-version:/var/jenkins_home/Jenkinsfile-version:ro
+      - ./jenkins/Jenkinsfile-mixed:/var/jenkins_home/Jenkinsfile-mixed:ro
+      - ../../:/var/jenkins_home/pipeline:ro
       - ../../build/test-it-logs:/var/jenkins_home/test-it-logs:ro
       # Docker socket so Jenkins can buildx build
       - /var/run/docker.sock:/var/run/docker.sock

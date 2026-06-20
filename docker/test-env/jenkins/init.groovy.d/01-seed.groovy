@@ -7,8 +7,8 @@
 //   2) Set up authorization strategy.
 //   3) Register the global pipeline library.
 //   4) Set up credentials (nexus-deployer, docker-registry).
-//   5) Seed the "apex-modules-test" pipeline job.
-//   6) Trigger the first build after Jenkins finishes booting.
+//   5) Seed the per-scenario Jenkinsfile jobs (build / parallel / scan / version / mixed).
+//   6) Trigger the first build of every job asynchronously so we don't block Jenkins boot.
 
 import hudson.model.*
 import hudson.security.*
@@ -152,76 +152,95 @@ try {
     println '[apex-init] Credential setup failed: ' + e.message
 }
 
-// 5) Seed the module-test pipeline job
-def jobName = 'apex-modules-test'
-try {
-    def wfPlugin = inst.pluginManager.getPlugin('workflow-job')
-    def cpsPlugin = inst.pluginManager.getPlugin('workflow-cps')
-    if (wfPlugin == null || cpsPlugin == null) {
-        println "[apex-init] WARNING: workflow-job or workflow-cps plugin not found, skipping job seed"
-    } else {
-        def wfCl = wfPlugin.classLoader
-        def cpsCl = cpsPlugin.classLoader
-        def wfJobClass = wfCl.loadClass('org.jenkinsci.plugins.workflow.job.WorkflowJob')
-        def cpsClass = cpsCl.loadClass('org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition')
+// 5) Seed pipeline jobs from a list of (jobName, jenkinsfilePath, description) tuples
+def jobSpecs = [
+    ['apex-modules-test',     '/var/jenkins_home/Jenkinsfile-modules',     'Exercises all public module interfaces of apex-ci-library'],
+    ['apex-build-java',       '/var/jenkins_home/Jenkinsfile-build-java',  'Single-type build: Java/Maven via apexBuild DSL'],
+    ['apex-parallel-build',   '/var/jenkins_home/Jenkinsfile-parallel-build', 'Parallel multi-language build via native parallel + apexBuild'],
+    ['apex-wait-scan',        '/var/jenkins_home/Jenkinsfile-wait-scan',   'Wait for parallel scan results via apexScan'],
+    ['apex-version',          '/var/jenkins_home/Jenkinsfile-version',     'Auto version management via apexVersion'],
+    ['apex-mixed',            '/var/jenkins_home/Jenkinsfile-mixed',       'Mixed pipeline: version + build + parallel + scan + retry']
+]
 
-        def job = inst.getItem(jobName)
-        if (job == null || !wfJobClass.isInstance(job)) {
-            job = inst.createProject(wfJobClass, jobName)
-            println "[apex-init] Created job ${jobName}"
-        } else {
-            println "[apex-init] Job ${jobName} already exists, reusing"
-        }
+def wfPlugin = inst.pluginManager.getPlugin('workflow-job')
+def cpsPlugin = inst.pluginManager.getPlugin('workflow-cps')
+if (wfPlugin == null || cpsPlugin == null) {
+    println '[apex-init] WARNING: workflow-job or workflow-cps plugin not found, skipping job seed'
+} else {
+    def wfCl = wfPlugin.classLoader
+    def cpsCl = cpsPlugin.classLoader
+    def wfJobClass = wfCl.loadClass('org.jenkinsci.plugins.workflow.job.WorkflowJob')
+    def cpsClass = cpsCl.loadClass('org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition')
 
-        def jenkinsfile = new File('/var/jenkins_home/Jenkinsfile-modules')
-        if (jenkinsfile.exists()) {
-            // CpsFlowDefinition(String script, boolean sandbox)
-            def defn = cpsClass.getDeclaredConstructor(String.class, boolean.class).newInstance(jenkinsfile.text, false)
-            job.setDefinition(defn)
-            job.setConcurrentBuild(true)
-            job.description = 'Exercises all public module interfaces of apex-ci-library'
-            println "[apex-init] Job ${jobName} definition updated (${jenkinsfile.length()} bytes)"
-
-            // Approve the script to bypass script-security
-            try {
-                def ssPlugin = inst.pluginManager.getPlugin('script-security')
-                if (ssPlugin != null) {
-                    def ssCl = ssPlugin.classLoader
-                    def scriptApprovalClass = ssCl.loadClass('org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval')
-                    def approval = scriptApprovalClass.getMethod('get').invoke(null)
-                    def groovyLangClass = ssCl.loadClass('org.jenkinsci.plugins.scriptsecurity.scripts.languages.GroovyLanguage')
-                    def lang = groovyLangClass.getMethod('get').invoke(null)
-                    // preapprove(String script, Language language) returns hash and adds to approved list
-                    def hash = scriptApprovalClass.getMethod('preapprove', String.class, ssCl.loadClass('org.jenkinsci.plugins.scriptsecurity.scripts.Language')).invoke(approval, jenkinsfile.text, lang)
-                    approval.save()
-                    println "[apex-init] Script approved for ${jobName} (hash: ${hash})"
-                }
-            } catch (Exception se) {
-                println '[apex-init] Script approval failed: ' + se.message
+    jobSpecs.each { spec ->
+        def jobName = spec[0]
+        def jfPath  = spec[1]
+        def desc    = spec[2]
+        try {
+            def job = inst.getItem(jobName)
+            if (job == null || !wfJobClass.isInstance(job)) {
+                job = inst.createProject(wfJobClass, jobName)
+                println "[apex-init] Created job ${jobName}"
+            } else {
+                println "[apex-init] Job ${jobName} already exists, reusing"
             }
-        } else {
-            println "[apex-init] WARNING: ${jenkinsfile} not found"
+
+            def jenkinsfile = new File(jfPath)
+            if (jenkinsfile.exists()) {
+                // CpsFlowDefinition(String script, boolean sandbox)
+                def defn = cpsClass.getDeclaredConstructor(String.class, boolean.class).newInstance(jenkinsfile.text, false)
+                job.setDefinition(defn)
+                job.setConcurrentBuild(false)
+                job.description = desc
+                println "[apex-init] Job ${jobName} definition updated (${jenkinsfile.length()} bytes)"
+
+                // Approve the script to bypass script-security
+                try {
+                    def ssPlugin = inst.pluginManager.getPlugin('script-security')
+                    if (ssPlugin != null) {
+                        def ssCl = ssPlugin.classLoader
+                        def scriptApprovalClass = ssCl.loadClass('org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval')
+                        def approval = scriptApprovalClass.getMethod('get').invoke(null)
+                        def langClass = ssCl.loadClass('org.jenkinsci.plugins.scriptsecurity.scripts.languages.GroovyLanguage')
+                        def lang = langClass.getMethod('get').invoke(null)
+                        def hash = scriptApprovalClass.getMethod('preapprove', String.class, ssCl.loadClass('org.jenkinsci.plugins.scriptsecurity.scripts.Language')).invoke(approval, jenkinsfile.text, lang)
+                        approval.save()
+                        println "[apex-init] Script approved for ${jobName} (hash: ${hash})"
+                    }
+                } catch (Exception se) {
+                    println "[apex-init] Script approval failed for ${jobName}: ${se.message}"
+                }
+            } else {
+                println "[apex-init] WARNING: ${jenkinsfile} not found, job ${jobName} left untouched"
+            }
+        } catch (Exception e) {
+            println "[apex-init] Seed failed for ${jobName}: ${e.message}"
+            e.printStackTrace()
         }
     }
-} catch (Exception e) {
-    println '[apex-init] Job seed failed: ' + e.message
-    e.printStackTrace()
 }
 
 inst.save()
 
-// 6) Trigger the first build asynchronously so we don't block Jenkins boot
+// 6) Trigger the first build of every seeded job asynchronously so we don't block Jenkins boot
 new Timer().schedule(new TimerTask() {
     @Override
     void run() {
         try {
-            def j = Jenkins.instance.getItem(jobName)
-            if (j != null) {
-                println '[apex-init] Triggering initial build of ' + jobName
-                j.scheduleBuild(new hudson.model.Cause.UserIdCause())
+            jobSpecs.each { spec ->
+                def jobName = spec[0]
+                def j = Jenkins.instance.getItem(jobName)
+                if (j != null) {
+                    try {
+                        println '[apex-init] Triggering initial build of ' + jobName
+                        j.scheduleBuild(new hudson.model.Cause.UserIdCause())
+                    } catch (Throwable t) {
+                        println '[apex-init] Initial build trigger failed for ' + jobName + ': ' + t
+                    }
+                }
             }
         } catch (Throwable t) {
-            println '[apex-init] Initial build trigger failed: ' + t
+            println '[apex-init] Initial build trigger phase failed: ' + t
         }
     }
 }, 30000L)

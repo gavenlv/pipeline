@@ -1,0 +1,110 @@
+// =========================================================================
+// Jenkinsfile-wait-scan — 等待 scan 结果场景
+//
+// 目标：验证 apexScan 在 Jenkinsfile 中能：
+//   1) 跑多个 scanner（sast / sca / container / license）
+//   2) 阻塞等待所有 scanner 完成（apexScan 内部使用 Jenkins parallel）
+//   3) 异常隔离：一个 scanner 失败不影响其它
+//   4) 门禁判断：failOn 命中时抛异常
+//
+// 用法：参数 SCAN_FAIL_BRANCH 可指定哪个 scanner 模拟失败
+// 注意：本文件不 import 任何 com.hsbc.* 类，只使用 vars/ 入口。
+// =========================================================================
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'SCAN_FAIL_BRANCH', defaultValue: '',
+               description: 'Which scanner to simulate failure on: sast|sca|container|license|<empty=ok>')
+        booleanParam(name: 'ENABLE_LICENSE', defaultValue: true, description: 'Enable license scanner')
+        string(name: 'SCAN_TIMEOUT_MIN', defaultValue: '5', description: 'Per-scanner timeout in minutes')
+    }
+
+    stages {
+        stage('Wait for scan results') {
+            steps {
+                script {
+                    String fail = (params.SCAN_FAIL_BRANCH ?: '').toString().trim().toLowerCase()
+                    int sleepMs = 800   // simulate work
+                    long started = System.currentTimeMillis()
+
+                    def runner = apexScan {
+                        sast { ->
+                            if (fail == 'sast') throw new RuntimeException("SAST server unreachable (simulated)")
+                            Thread.sleep(sleepMs)
+                            // 返回 null/Map 也可，runner 会包装成 OK
+                            return [scanner: 'sast', status: 'OK', high: 0, medium: 2, low: 5,
+                                    summary: 'sonar-scanner finished: 0 high / 2 medium / 5 low']
+                        }
+                        sca { ->
+                            if (fail == 'sca') throw new RuntimeException("SCA server unreachable (simulated)")
+                            Thread.sleep(sleepMs)
+                            return [scanner: 'sca', status: 'OK', high: 0, medium: 0, low: 0,
+                                    summary: 'snyk test: 0 vulnerabilities']
+                        }
+                        container('apex-sample:1.0.0') { ->
+                            if (fail == 'container') throw new RuntimeException("trivy image failed (simulated)")
+                            Thread.sleep(sleepMs)
+                            return [scanner: 'container', status: 'OK', high: 0, medium: 1, low: 0,
+                                    summary: 'trivy image apex-sample:1.0.0: 0 high / 1 medium']
+                        }
+                        if (params.ENABLE_LICENSE) {
+                            generic('license') { ->
+                                if (fail == 'license') throw new RuntimeException("license-check failed (simulated)")
+                                Thread.sleep(sleepMs)
+                                return [scanner: 'license', status: 'OK', high: 0, medium: 0, low: 0,
+                                        summary: 'license-check: no forbidden licenses']
+                            }
+                        }
+                    }
+
+                    // 把 timeout 从参数透传给 runner
+                    runner.timeoutMin = (params.SCAN_TIMEOUT_MIN ?: '5').toString().toLong()
+                    runner.failOn     = ['high', 'critical']
+                    runner.failFast   = true
+
+                    // 关键调用：阻塞等待所有 scanner 完成
+                    def results = runner.run()
+                    long elapsed = System.currentTimeMillis() - started
+
+                    echo "All scanners returned in ${elapsed} ms".toString()
+                    results.each { name, sr ->
+                        echo "  ${name.padRight(20)} status=${sr.status} high=${sr.high} medium=${sr.medium} low=${sr.low}".toString()
+                    }
+                    if (elapsed < 4 * sleepMs) {
+                        error "Scanners returned too fast (${elapsed} ms < ${4 * sleepMs}); " +
+                              "expected concurrent execution, not sequential."
+                    }
+
+                    // 门禁判断：通过 try/catch 隔离 ApexCIException
+                    if (fail.isEmpty()) {
+                        runner.assertPassed(results)
+                        echo "Scan gate passed (no high-severity findings)".toString()
+                    } else {
+                        boolean gateFailed = false
+                        String errMsg = ''
+                        try {
+                            runner.assertPassed(results)
+                        } catch (Throwable ex) {
+                            gateFailed = true
+                            errMsg = ex.message?.toString() ?: ex.toString()
+                            echo "Expected gate failure for ${fail}: ${errMsg}".toString()
+                            if (!errMsg.toLowerCase().contains('failed')) {
+                                error "Gate exception should mention FAILED: ${errMsg}".toString()
+                            }
+                        }
+                        if (!gateFailed) {
+                            error "Expected scan gate to fail for ${fail}, but it passed"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

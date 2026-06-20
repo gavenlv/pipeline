@@ -15,7 +15,24 @@ class GoBuildConfig implements Serializable {
     List<String> commands = ['build', 'test']
     String mainPackage = './...'
     boolean withRace = false
-    DynamicParams params
+    DynamicParams params = new DynamicParams()
+
+    void setParams(DynamicParams p) { this.params = (p != null) ? p : new DynamicParams() }
+
+    Object params(Closure body) {
+        if (this.params == null) this.params = new DynamicParams()
+        body.delegate = this.params
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body()
+        return this
+    }
+
+    void setParams(Closure body) {
+        if (this.params == null) this.params = new DynamicParams()
+        body.delegate = this.params
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body()
+    }
 
     static GoBuildConfig fromClosure(Closure body) {
         def cfg = new GoBuildConfig()
@@ -24,6 +41,7 @@ class GoBuildConfig implements Serializable {
         body.resolveStrategy = Closure.DELEGATE_FIRST
         body()
         if (cfg.commands == null) cfg.commands = ['build', 'test']
+        if (cfg.params == null) cfg.params = new DynamicParams()
         return cfg
     }
 }

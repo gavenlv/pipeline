@@ -25,19 +25,15 @@ class PythonBuilder extends AbstractBuilder implements Serializable {
     Object parseConfig(Closure body) { return PythonBuildConfig.fromClosure(body) }
 
     @Override
-    Object execute(PipelineContext ctx) {
-        throw new BuildException("Use execute(ctx, body).")
-    }
-
-    Object execute(PipelineContext ctx, Closure body) {
+    Object execute(PipelineContext ctx, Closure body, Map opts = [:]) {
         PythonBuildConfig cfg = (PythonBuildConfig) parseConfig(body)
         validate(cfg)
-        ctx.script?.echo("==> [Python:${cfg.packageManager}] venv=${cfg.venv} commands=${cfg.commands}")
+        ctx?.log("==> [Python:${cfg.packageManager}] venv=${cfg.venv} commands=${cfg.commands}")
 
         List<String> cmd = []
         switch (cfg.packageManager) {
             case 'pip':
-                cmd = [cfg.pythonVersion >= 3 ? 'python3' : 'python', '-m', 'pip']
+                cmd = [(cfg.pythonVersion >= 3 ? 'python3' : 'python'), '-m', 'pip']
                 break
             case 'poetry':
                 cmd = ['poetry']
@@ -53,7 +49,7 @@ class PythonBuilder extends AbstractBuilder implements Serializable {
         cmd = platformAdapt(cmd, ctx)
 
         com.hsbc.treasury.apex.ci.utils.Sandbox.runShell(ctx, cmd, "python-${cfg.packageManager}".toString())
-        ctx.setAttr("python.build.pm", cfg.packageManager)
+        ctx?.setAttr("python.build.pm", cfg.packageManager)
         return ['pm': cfg.packageManager, 'commands': cfg.commands]
     }
 

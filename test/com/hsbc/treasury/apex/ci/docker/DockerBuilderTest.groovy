@@ -9,7 +9,6 @@ class DockerBuilderTest {
     void assemblesBuildxCommand() {
         def cfg = DockerBuildConfig.fromClosure {
             dockerfile = 'Dockerfile'
-            tags = ['1.0.0', 'latest']
             platforms = ['linux/amd64', 'linux/arm64']
             buildArgs = ['NODE_VERSION=20', 'JAR_FILE=app.jar']
             secrets = ['id=npmrc,src=.npmrc']
@@ -40,7 +39,7 @@ class DockerBuilderTest {
 
     @Test
     void pushFlagIncludedWhenPushOnBuild() {
-        def cfg = DockerBuildConfig.fromClosure { pushOnBuild = true; tags = ['t'] }
+        def cfg = DockerBuildConfig.fromClosure { pushOnBuild = true }
         def cmd = DockerBuilder.assembleCommand('img:1', cfg)
         Assert.assertTrue(cmd.contains('--push'))
         Assert.assertFalse(cmd.contains('--load'))
