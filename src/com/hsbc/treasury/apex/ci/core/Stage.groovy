@@ -13,10 +13,17 @@ class Stage implements Serializable {
     final String name
     private final List<Step> steps = []
     private boolean failFast = true
-    private Retry retry = Retry.none()
+    private Retry retry = null
     private boolean parallel = false
 
     Stage(String name) { this.name = name }
+
+    Retry getRetry() {
+        if (retry == null) {
+            retry = new Retry(maxAttempts: 1, initialDelayMs: 0L)
+        }
+        return retry
+    }
 
     Stage step(Step s) {
         steps << s
@@ -39,7 +46,6 @@ class Stage implements Serializable {
     List<Step> getSteps() { return steps }
     boolean isParallel() { return parallel }
     boolean isFailFast() { return failFast }
-    Retry getRetry() { return retry }
 
     /** 在给定的 script 上真正执行（沙箱安全） */
     void execute(PipelineContext ctx) {
