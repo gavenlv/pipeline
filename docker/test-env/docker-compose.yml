@@ -72,7 +72,8 @@ services:
       - ./jenkins/Jenkinsfile-wait-scan:/var/jenkins_home/Jenkinsfile-wait-scan:ro
       - ./jenkins/Jenkinsfile-version:/var/jenkins_home/Jenkinsfile-version:ro
       - ./jenkins/Jenkinsfile-mixed:/var/jenkins_home/Jenkinsfile-mixed:ro
-      - ../../:/var/jenkins_home/pipeline:ro
+      # 仓库根 RW：构建产物 (samples/*/target 等) 需要在容器内写入
+      - ../../:/var/jenkins_home/pipeline
       - ../../build/test-it-logs:/var/jenkins_home/test-it-logs:ro
       # Docker socket so Jenkins can buildx build
       - /var/run/docker.sock:/var/run/docker.sock

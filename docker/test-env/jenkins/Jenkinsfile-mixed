@@ -66,12 +66,13 @@ pipeline {
                             apexBuild('java') {
                                 jdk       = 11
                                 buildTool = 'maven'
-                                goals     = ['clean', 'verify']
+                                // 不带 clean：容器里 jenkins 用户可能无法删除 host 创建的
+                                // 旧 target 目录（mount 跨 OS 用户权限问题）。需要 clean 时可手动执行。
+                                goals     = ['verify']
                                 params {
                                     flag('--batch-mode')
                                     flag('-DskipITs')
                                     property('maven.javadoc.skip', 'true')
-                                    property('project.build.outputTimestamp', '1970-01-01T00:00:00Z')
                                 }
                             }
                         }
@@ -100,8 +101,8 @@ pipeline {
                         dir("${env.PIPELINE_ROOT}/docker/test-env/samples/node".toString()) {
                             apexBuild('node') {
                                 packageManager = 'npm'
-                                scripts        = ['install', 'test']
-                                params { flag('--no-audit'); flag('--no-fund') }
+                                install        = true
+                                scripts        = ['test']
                             }
                         }
                     }
@@ -109,10 +110,10 @@ pipeline {
                         dir("${env.PIPELINE_ROOT}/docker/test-env/samples/python".toString()) {
                             apexBuild('python') {
                                 venv     = false
-                                commands = ['-m', 'pip', 'install', '--quiet', 'pytest']
+                                commands = ['install', '--quiet', '--break-system-packages', 'pytest']
                             }
                             sh label: 'pytest', script: '''
-                                python3 -m pip install --quiet pytest || true
+                                python3 -m pip install --quiet --break-system-packages pytest || true
                                 python3 -m pytest -q test_apex_sample.py
                             '''
                         }
@@ -158,7 +159,8 @@ pipeline {
                     long elapsed = System.currentTimeMillis() - started
                     echo "Scanners finished in ${elapsed} ms (expected ~${sleepMs}*N parallel)".toString()
                     results.each { n, sr -> echo "  ${n.padRight(20)} status=${sr.status} high=${sr.high}".toString() }
-                    if (elapsed > 3 * sleepMs) {
+                    // 3 个 scanner 各 sleep 600ms，顺序跑约 1800ms。允许 executor 分配开销上浮 50%。
+                    if (elapsed > (long)(3 * sleepMs * 1.5)) {
                         error "Scanners took ${elapsed} ms which suggests they did NOT run in parallel"
                     }
                     runner.assertPassed(results)

@@ -14,7 +14,8 @@ class NodeBuildConfig implements Serializable {
 
     int nodeVersion = 20
     String packageManager = 'npm'       // npm | yarn | pnpm
-    List<String> scripts = ['install', 'build', 'test']
+    boolean install = true              // 是否在 scripts 之前先跑 install/ci
+    List<String> scripts = ['test']
     String registry = ''
     boolean useCache = true
     DynamicParams params = new DynamicParams()
@@ -43,7 +44,7 @@ class NodeBuildConfig implements Serializable {
         body.delegate = cfg
         body.resolveStrategy = Closure.DELEGATE_FIRST
         body()
-        if (cfg.scripts == null) cfg.scripts = ['install', 'build']
+        if (cfg.scripts == null) cfg.scripts = ['test']
         if (cfg.params == null) cfg.params = new DynamicParams()
         return cfg
     }

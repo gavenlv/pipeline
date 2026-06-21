@@ -29,15 +29,21 @@ pipeline {
         stage('Explicit Bump') {
             steps {
                 script {
-                    def pair = apexVersion.bump(params.BASE_VERSION, params.BUMP_TYPE) {
-                        buildMeta      = params.BUILD_META
-                        preReleaseTag  = params.PRE_TAG
+                    // CPS sandbox: capture `params` outside the body closure so that
+                    // `params.BUILD_META` inside the closure resolves correctly.
+                    String baseV  = params.BASE_VERSION
+                    String bumpT  = params.BUMP_TYPE
+                    String preR   = params.PRE_TAG
+                    String buildM = params.BUILD_META
+                    def pair = apexVersion.bump(baseV, bumpT) {
+                        buildMeta     = buildM
+                        preReleaseTag = preR
                     }
                     def next = pair[0]
                     def mgr  = pair[1]
                     env.APP_VERSION = next
-                    echo "Explicit bump: ${params.BASE_VERSION} --${params.BUMP_TYPE}--> ${next}".toString()
-                    echo "Manager state: base=${mgr.base} bump=${mgr.bump} pre=${mgr.preReleaseTag} meta=${mgr.buildMeta}".toString()
+                    echo "Explicit bump: ${baseV} --${bumpT}--> ${next}".toString()
+                    echo "Manager state: base=${mgr.baseVersion} bump=${mgr.bump} pre=${mgr.preReleaseTag} meta=${mgr.buildMeta}".toString()
                 }
             }
         }

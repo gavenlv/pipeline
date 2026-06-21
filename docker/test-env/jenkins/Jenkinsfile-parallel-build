@@ -53,7 +53,9 @@ pipeline {
                                 apexBuild('java') {
                                     jdk       = 11
                                     buildTool = 'maven'
-                                    goals     = ['-B', 'clean', 'test']
+                                    // 不带 clean：容器里 jenkins 用户可能无法删除 host 创建的
+                                    // 旧 target 目录（mount 跨 OS 用户权限问题）。需要 clean 时可手动覆盖。
+                                    goals     = ['-B', 'package']
                                     params {
                                         flag('--batch-mode')
                                         flag('-DskipITs')
@@ -70,11 +72,8 @@ pipeline {
                             dir("${env.PIPELINE_ROOT}/docker/test-env/samples/node".toString()) {
                                 apexBuild('node') {
                                     packageManager = 'npm'
-                                    scripts        = ['install', 'test']
-                                    params {
-                                        flag('--no-audit')
-                                        flag('--no-fund')
-                                    }
+                                    install        = true
+                                    scripts        = ['test']
                                 }
                                 stash name: 'tar-node', includes: 'package.json,test.js', allowEmpty: true
                             }
@@ -86,10 +85,10 @@ pipeline {
                             dir("${env.PIPELINE_ROOT}/docker/test-env/samples/python".toString()) {
                                 apexBuild('python') {
                                     venv     = false
-                                    commands = ['-m', 'pip', 'install', '--quiet', 'pytest']
+                                    commands = ['install', '--quiet', '--break-system-packages', 'pytest']
                                 }
                                 sh label: 'pytest', script: '''
-                                    python3 -m pip install --quiet pytest || true
+                                    python3 -m pip install --quiet --break-system-packages pytest || true
                                     python3 -m pytest -q test_apex_sample.py
                                 '''
                                 stash name: 'pkg-python', includes: 'pyproject.toml,apex_sample.py,test_apex_sample.py'

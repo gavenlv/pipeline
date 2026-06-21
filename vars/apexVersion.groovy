@@ -25,10 +25,57 @@ import com.hsbc.treasury.apex.ci.version.SemVer
 import com.hsbc.treasury.apex.ci.version.VersionManager
 import com.hsbc.treasury.apex.ci.core.PipelineContext
 
-this.metaClass.parse = { String t -> SemVer.parse(t) }
-this.metaClass.tryParse = { String t -> SemVer.tryParse(t) }
-this.metaClass.max = { a, b -> (a.compareTo(b) >= 0) ? a : b }
-this.metaClass.min = { a, b -> (a.compareTo(b) <= 0) ? a : b }
+/** 解析 SemVer 字符串；解析失败抛出。 */
+def parse(String text) {
+    return SemVer.parse(text)
+}
+
+/** 解析 SemVer 字符串；解析失败返回 null。 */
+def tryParse(String text) {
+    return SemVer.tryParse(text)
+}
+
+/** 取两个 SemVer 中的较大者。 */
+def max(Comparable a, Comparable b) {
+    if (a == null) return b
+    if (b == null) return a
+    int cmp = a.compareTo(b)
+    if (cmp >= 0) return a
+    return b
+}
+
+/** 取两个 SemVer 中的较小者。 */
+def min(Comparable a, Comparable b) {
+    if (a == null) return b
+    if (b == null) return a
+    int cmp = a.compareTo(b)
+    if (cmp <= 0) return a
+    return b
+}
+
+/** 取列表中最大的 SemVer。 */
+def max(List versions) {
+    if (versions == null || versions.isEmpty()) return null
+    Object best = versions[0]
+    for (int i = 1; i < versions.size(); i++) {
+        Object v = versions[i]
+        if (v == null) continue
+        if (best == null || ((Comparable) v).compareTo(best) > 0) best = v
+    }
+    return best
+}
+
+/** 取列表中最小的 SemVer。 */
+def min(List versions) {
+    if (versions == null || versions.isEmpty()) return null
+    Object best = versions[0]
+    for (int i = 1; i < versions.size(); i++) {
+        Object v = versions[i]
+        if (v == null) continue
+        if (best == null || ((Comparable) v).compareTo(best) < 0) best = v
+    }
+    return best
+}
 
 /** 显式声明 base + bump + 可选 preReleaseTag / buildMeta */
 def bump(String base, String bumpType, Closure body = null) {

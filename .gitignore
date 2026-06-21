@@ -1,4 +1,59 @@
+# ===== Build artifacts =====
 /dist/
-/.pycache/
-/.venv/
 /build/
+/target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# Node / npm
+node_modules/
+.npm/
+.pnpm-store/
+
+# Go
+*.exe
+*.test
+*.out
+
+# ===== Logs =====
+*.log
+
+# ===== IDE / Editor =====
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Temporary / Local files =====
+cookies.txt
+crumb.json
+build*.json

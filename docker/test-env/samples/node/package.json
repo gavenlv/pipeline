@@ -4,6 +4,7 @@
   "description": "Sample Node project for apex-ci-library integration tests",
   "main": "index.js",
   "scripts": {
+    "install": "echo 'install hook (no-op for sample)'",
     "test": "node test.js"
   },
   "license": "MIT",

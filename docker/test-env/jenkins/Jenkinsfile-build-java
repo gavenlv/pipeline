@@ -23,7 +23,9 @@ pipeline {
     }
 
     parameters {
-        string(name: 'MVN_GOALS',     defaultValue: 'clean verify', description: 'Maven goals to run')
+        // 注意：默认不去 clean target/；容器里 jenkins 用户可能无法删除 host 创建的
+        // 旧 target 目录（mount 跨 OS 用户权限问题）。需要 clean 时可手动覆盖。
+        string(name: 'MVN_GOALS',     defaultValue: 'verify', description: 'Maven goals to run')
         string(name: 'SAMPLE_DIR',    defaultValue: 'docker/test-env/samples/java', description: 'Java sample directory (relative to pipeline root)')
         string(name: 'BUMP_TYPE',     defaultValue: 'patch',  description: 'version bump (patch|minor|major|release|prerelease)')
     }
@@ -66,11 +68,11 @@ pipeline {
 
         stage('Build') {
             steps {
-                // 在 apex { } 闭包外部先把 Jenkinsfile 的 params 抓住，
-                // 避免在 builder config 的 closure 中 `params.X` 被误解析为 cfg.params (DynamicParams)。
-                String goals = params.MVN_GOALS
                 dir("${env.PIPELINE_ROOT}/${params.SAMPLE_DIR}".toString()) {
                     script {
+                        // 在闭包外部把 Jenkinsfile 的 params 抓住（避免 builder config 的 closure
+                        // 中 `params.X` 被误解析为 cfg.params 这个 DynamicParams 字段）。
+                        String goals = params.MVN_GOALS
                         apex {
                             apexBuild('java') {
                                 jdk        = 11
@@ -80,7 +82,11 @@ pipeline {
                                     flag('--batch-mode')
                                     flag('-DskipITs')
                                     property('maven.javadoc.skip', 'true')
-                                    property('project.build.outputTimestamp', '1970-01-01T00:00:00Z')
+                                    // Maven requires outputTimestamp to be within
+                                    // [1980-01-01T00:00:02Z, 2099-12-31T23:59:59Z]; use 1
+                                    // (reproducible-builds sentinel) for fixed epoch
+                                    // but it still maps to 1970, so just drop it here
+                                    // and rely on default behaviour.
                                 }
                             }
                         }

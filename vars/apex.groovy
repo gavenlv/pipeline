@@ -40,7 +40,10 @@ def call(Closure body) {
     script.binding?.setVariable('apexCtx', ctx)
     body.delegate = ctx
     body.resolveStrategy = Closure.DELEGATE_FIRST
-    body()
+    // Pass the freshly created context as the body's parameter so that
+    // `apex { ctx -> ctx.setAttr(...) }` resolves `ctx` to the real object
+    // rather than null under the CPS sandbox.
+    body(ctx)
     return ctx
 }
 

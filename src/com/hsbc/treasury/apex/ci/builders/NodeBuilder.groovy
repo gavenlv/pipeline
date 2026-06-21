@@ -27,18 +27,25 @@ class NodeBuilder extends AbstractBuilder implements Serializable {
         validate(cfg)
         ctx?.log("==> [Node:${cfg.packageManager}] scripts=${cfg.scripts}")
 
-        List<String> cmd = [cfg.packageManager]
-        cfg.scripts.each { s ->
-            cmd << 'run' << s
+        // 1) 装依赖（如果有 lock 文件优先 ci，否则 install）
+        if (cfg.install != false) {
+            List<String> installCmd = [cfg.packageManager]
+            if (new File(ctx?.script?.pwd()?.toString() ?: '.', 'package-lock.json').exists() && cfg.packageManager == 'npm') {
+                installCmd << 'ci' << '--no-audit' << '--no-fund'
+            } else {
+                installCmd << 'install' << '--no-audit' << '--no-fund'
+            }
+            installCmd = platformAdapt(installCmd, ctx)
+            com.hsbc.treasury.apex.ci.utils.Sandbox.runShell(ctx, installCmd, "node-${cfg.packageManager}-install".toString())
         }
-        if (cfg.params != null) cmd = mergeDynamicParams(cmd, cfg.params)
-        cmd = platformAdapt(cmd, ctx)
 
-        if (cfg.registry) {
-            ctx?.log("[Node] using registry: ${cfg.registry}")
+        // 2) 依次执行 scripts：每个脚本用 `npm run <name>`，串行（set -e 失败即停）
+        for (String s : cfg.scripts) {
+            List<String> runCmd = [cfg.packageManager, 'run', s]
+            if (cfg.params != null) runCmd = mergeDynamicParams(runCmd, cfg.params)
+            runCmd = platformAdapt(runCmd, ctx)
+            com.hsbc.treasury.apex.ci.utils.Sandbox.runShell(ctx, runCmd, "node-${cfg.packageManager}-${s}".toString())
         }
-
-        com.hsbc.treasury.apex.ci.utils.Sandbox.runShell(ctx, cmd, "node-${cfg.packageManager}".toString())
         ctx?.setAttr("node.build.pm", cfg.packageManager)
         return ['pm': cfg.packageManager, 'scripts': cfg.scripts]
     }

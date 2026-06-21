@@ -2,40 +2,34 @@
 // apexConfig — 配置解析（轻量版）
 //
 // 用法：
-//   def cfg = apexConfig.fromYaml(readFile('apex.yaml'))
-//   def cfg = apexConfig.fromProperties(readFile('apex.properties'))
-//   def cfg = apexConfig.fromJson(readFile('apex.json'))
+//   def cfg = apexConfig(text)              // 默认为 fromYaml
+//   def cfg = apexConfig { fromYaml text: '...' }
+//   def cfg = apexConfig { fromJson text: '...' }
+//   def cfg = apexConfig { fromProperties text: '...' }
 //
-// 或 builder 形式：
-//   def cfg = apexConfig {
-//       fromYaml text: readFile('apex.yaml')
-//   }
+// 实现要点：
+// - script 类只暴露 def call(String) / def call(Closure)，避免 CPS 把
+//   同名方法误判为 DSL 步骤
+// - 闭包内用 ConfigBuilder（src/）当 delegate，因为 CPS 不会把 Groovy
+//   类的方法误判为 DSL
+// - 实际解析逻辑在 LibraryConfig（src/）里
 // =========================================================================
 import com.hsbc.treasury.apex.ci.config.LibraryConfig
-import com.hsbc.treasury.apex.ci.errors.ApexCIException
+import com.hsbc.treasury.apex.ci.config.ConfigBuilder
+import com.hsbc.treasury.apex.ci.config.ConfigParserHelper
 
-this.metaClass.fromYaml = { String t -> LibraryConfig.fromYamlLite(t) }
-this.metaClass.fromProperties = { String t -> LibraryConfig.fromProperties(t) }
-this.metaClass.fromJson = { String t -> LibraryConfig.fromJson(t) }
-this.metaClass.emptyConfig = { LibraryConfig.empty() }
+/** 字符串快捷：apexConfig(text) 默认按 YAML 解析。 */
+def call(String text) {
+    return ConfigParserHelper.fromYaml(text)
+}
 
+/** Builder 形式：apexConfig { fromYaml text: '...' } */
 def call(Closure body) {
-    String text = null
-    String format = 'properties'
-    body.delegate = [
-        fromYaml:       { String t -> text = t; format = 'yaml' },
-        fromProperties: { String t -> text = t; format = 'properties' },
-        fromJson:       { String t -> text = t; format = 'json' }
-    ]
+    ConfigBuilder b = new ConfigBuilder()
+    body.delegate = b
     body.resolveStrategy = Closure.DELEGATE_FIRST
     body()
-    if (text == null) throw new ApexCIException("apexConfig: must call fromYaml/fromProperties/fromJson")
-    switch (format) {
-        case 'yaml':       return LibraryConfig.fromYamlLite(text)
-        case 'json':       return LibraryConfig.fromJson(text)
-        case 'properties': return LibraryConfig.fromProperties(text)
-        default:           return LibraryConfig.fromProperties(text)
-    }
+    return b.resolve()
 }
 
 return this

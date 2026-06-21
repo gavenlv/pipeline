@@ -20,7 +20,6 @@
 // =========================================================================
 import com.hsbc.treasury.apex.ci.scanners.ScanRunner
 import com.hsbc.treasury.apex.ci.scanners.ScanResult
-import com.hsbc.treasury.apex.ci.scanners.ScanReport
 import com.hsbc.treasury.apex.ci.core.PipelineContext
 import com.hsbc.treasury.apex.ci.errors.ApexCIException
 
