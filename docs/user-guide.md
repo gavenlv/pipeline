@@ -3,7 +3,7 @@
 > **包名**：`com.hsbc.treasury.apex.ci`
 > **版本**：v2.0.0（Lightweight）
 > **目标读者**：使用本库编写 Jenkinsfile 的业务方研发 / DevOps
-> **最后更新**：2026-06-20
+> **最后更新**：2026-06-21
 
 ---
 
@@ -20,10 +20,12 @@
 9. [Nexus 发布 `apexPublish(...)`](#9-nexus-发布-apexpublish)
 10. [通知 `apexNotify(...)`](#10-通知-apexnotify)
 11. [配置 `apexConfig.xxx()`](#11-配置-apexconfigxxx)
-12. [典型模式 Cookbook](#12-典型模式-cookbook)
-13. [从旧 DSL 迁移](#13-从旧-dsl-迁移)
-14. [故障排查](#14-故障排查)
-15. [API 一览](#15-api-一览)
+12. [自动版本管理 `apexVersion` / `VersionManager`](#12-自动版本管理-apexversion--versionmanager)
+13. [典型模式 Cookbook](#13-典型模式-cookbook)
+14. [从旧 DSL 迁移](#14-从旧-dsl-迁移)
+15. [故障排查](#15-故障排查)
+16. [API 一览](#16-api-一览)
+17. [6 个端到端 Jenkinsfile 入门](#17-6-个端到端-jenkinsfile-入门)
 
 ---
 
@@ -775,42 +777,56 @@ def platforms = cfg.getList('docker.platforms', ['linux/amd64'])
 
 ```groovy
 stage('Compute Version') {
-    def v = apexVersion.bump('1.2.3', 'minor') {
-        buildMeta = env.GIT_COMMIT_SHORT  // 附加 build 段
+    steps {
+        script {
+            def pair = apexVersion.bump('1.2.3', 'minor') {
+                buildMeta     = env.GIT_COMMIT_SHORT  // 附加 build 段
+                preReleaseTag = 'rc.1'                // 只在 prerelease 时用
+            }
+            def next = pair[0]    // "1.3.0+abc1234"
+            def mgr  = pair[1]    // VersionManager 实例，便于后续 stage 引用
+            env.APP_VERSION = next
+            echo "Publishing as ${next} (manager: ${mgr})"
+        }
     }
-    // v = "1.3.0+abc1234"
-    echo "Publishing as ${v}"
 }
 ```
 
-`bump()` 返回 `String`（最终版本号），同时把决策记录到 `apexCtx`：
-
-| attr | 说明 |
-| --- | --- |
-| `version.base` | 原始版本 |
-| `version.next` | 计算结果 |
-| `version.bump` | bump 类型 |
-| `version.manifest` | 累计决策表（多个 stage 共享） |
+`bump()` 返回 `List<String, VersionManager>`：
+- `[0]` = 最终版本号字符串（如 `"1.3.0+abc1234"`）
+- `[1]` = `VersionManager` 实例，字段包括 `baseVersion / bump / preReleaseTag / buildMeta / resolved`
 
 ### 12.3 自动从环境变量
 
+`auto()` 有两个重载：
+
 ```groovy
-stage('Auto') {
-    def v = apexVersion.auto()
-    // 读 BUILD_VERSION=1.2.3 / BUMP_TYPE=patch / BUILD_META=$GIT_COMMIT_SHORT
-}
+// 1) 默认：从 ctx.env 读 BUILD_VERSION / BUMP_TYPE / BUILD_META
+def v = apexVersion.auto()
+
+// 2) 显式传 env（CPS 沙箱里推荐，避免依赖 ctx.env）
+def v = apexVersion.auto([
+    BUILD_VERSION: '1.2.3',
+    BUMP_TYPE    : 'patch',
+    BUILD_META   : 'abc1234',
+])
 ```
 
-业务方配置：
+业务方配置（在 `environment {}` 或 stage 内）：
 
-```bash
-# Jenkinsfile 中：
+```groovy
 environment {
-    BUILD_VERSION = '1.2.3'           # 当前版本
-    BUMP_TYPE     = 'patch'           # patch | minor | major | release | prerelease
-    BUILD_META    = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+    BUILD_VERSION = '1.2.3'                                          # 当前版本（必填）
+    BUMP_TYPE     = 'patch'                                           # patch|minor|major|release|prerelease
+    BUILD_META    = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()  # 可选
 }
 ```
+
+环境变量读取顺序：
+- `BUILD_VERSION` 或 `BASE_VERSION`
+- `BUMP_TYPE`（默认 `patch`）
+- `PRERELEASE_TAG`（仅 prerelease 类型有效）
+- `BUILD_META` 或 `GIT_COMMIT_SHORT`
 
 ### 12.4 解析与比较（SemVer）
 
@@ -1011,9 +1027,9 @@ stage('Publish (after scans)') {
 
 ---
 
-## 13. 从旧 DSL 迁移
+## 14. 从旧 DSL 迁移
 
-### 13.1 旧 DSL 写法（v1.x）
+### 14.1 旧 DSL 写法（v1.x）
 
 ```groovy
 apex {
@@ -1030,7 +1046,7 @@ apex {
 }
 ```
 
-### 13.2 新 DSL 写法（v2.0）
+### 14.2 新 DSL 写法（v2.0）
 
 ```groovy
 @Library('apex-ci-library@2.0') _
@@ -1049,7 +1065,7 @@ node {
 }
 ```
 
-### 13.3 映射表
+### 14.3 映射表
 
 | 旧 API | 新 API |
 | --- | --- |
@@ -1062,7 +1078,7 @@ node {
 | `parallel { java {} node {} }` | `parallel('java': {...}, 'node': {...})`（原生） |
 | `matrix { axes { axis(...) } }` | 原生 `matrix {}` 块 |
 
-### 13.4 收益
+### 14.4 收益
 
 - **更短**：少一层自定义抽象
 - **更稳**：少一处 CPS 转换
@@ -1071,9 +1087,9 @@ node {
 
 ---
 
-## 14. 故障排查
+## 15. 故障排查
 
-### 14.1 沙箱拒绝执行
+### 15.1 沙箱拒绝执行
 
 ```
 unclassified method java.lang.String replaceAll
@@ -1081,7 +1097,7 @@ unclassified method java.lang.String replaceAll
 
 → 闭包内不要做复杂字符串处理。改用库方法（`Sandbox.render`）或拆分到 `apexConfig` / `Util` 工具中。
 
-### 14.2 库版本不匹配
+### 15.2 库版本不匹配
 
 ```
 Library apex-ci-library version 1.x is required (current: 2.x)
@@ -1089,7 +1105,7 @@ Library apex-ci-library version 1.x is required (current: 2.x)
 
 → 升级 `@Library('apex-ci-library@2.0') _` 或保留 1.x 写法。
 
-### 14.3 Docker buildx 不存在
+### 15.3 Docker buildx 不存在
 
 ```
 docker: 'buildx' is not a docker command
@@ -1097,17 +1113,17 @@ docker: 'buildx' is not a docker command
 
 → 升级 Docker ≥ 19.03 并安装 buildx 插件；或在 `apexDocker` 闭包中设置 `dockerfile = 'Dockerfile'` 走 `docker build`。
 
-### 14.4 Nexus 401 Unauthorized
+### 15.4 Nexus 401 Unauthorized
 
 - 检查 `credentialsId` 是否正确
 - 检查 `nexus-deployer` 凭据是否过期
 - 确认仓库允许 deployment 角色
 
-### 14.5 扫描分支卡死
+### 15.5 扫描分支卡死
 
 → 设置 `runner.timeoutMin = 30`（默认已 30 分钟）；如需更长可改为 60。
 
-### 14.6 重试无效
+### 15.6 重试无效
 
 ```groovy
 // 错：调用了 Retry.none()，但实际上不重试
@@ -1117,7 +1133,7 @@ apexRetry.linear(1, 0) { sh '...' }   // 等于不重试
 apexRetry.linear(3, 1000) { sh '...' }
 ```
 
-### 14.7 日志位置
+### 15.7 日志位置
 
 | 类别 | 路径 |
 | --- | --- |
@@ -1127,9 +1143,9 @@ apexRetry.linear(3, 1000) { sh '...' }
 
 ---
 
-## 15. API 一览
+## 16. API 一览
 
-### 15.1 全局变量（`vars/`）
+### 16.1 全局变量（`vars/`）
 
 | 全局变量 | 用途 |
 | --- | --- |
@@ -1147,7 +1163,7 @@ apexRetry.linear(3, 1000) { sh '...' }
 | `apexConfig.xxx(text)` | YAML/JSON/Properties 解析 |
 | `apexNotify(args) {}` | 邮件通知 |
 
-### 15.2 主要类（`src/`）
+### 16.2 主要类（`src/`）
 
 | 类 | 包 | 职责 |
 | --- | --- | --- |
@@ -1166,3 +1182,411 @@ apexRetry.linear(3, 1000) { sh '...' }
 | `LibraryConfig` | `config` | YAML/Properties/JSON 解析 |
 | `Sandbox` / `Util` | `utils` | 沙箱 / 工具 |
 | `ApexCIException` / `BuildException` / `ScanException` / `ConfigException` | `errors` | 统一异常类型 |
+
+---
+
+## 17. 6 个端到端 Jenkinsfile 入门
+
+仓库自带 6 个独立的 Jenkinsfile（位于 `docker/test-env/jenkins/`），覆盖典型 CI 场景，已在本地 Jenkins 沙箱里跑过数百轮。本节介绍如何在自己的环境里运行它们。
+
+### 17.1 总览
+
+| 任务名 | 文件 | 覆盖场景 | 验证状态 |
+| --- | --- | --- | --- |
+| `apex-modules-test` | `Jenkinsfile-modules` | 全模块接口 + 集成用例 | 51 次成功，62/62 用例通过 |
+| `apex-build-java` | `Jenkinsfile-build-java` | 单一 Java/Maven 构建 | 39 次成功 |
+| `apex-parallel-build` | `Jenkinsfile-parallel-build` | 4 语言并行构建 | 25 次成功 |
+| `apex-wait-scan` | `Jenkinsfile-wait-scan` | 并行扫描 + 门禁 | 24 次成功 |
+| `apex-version` | `Jenkinsfile-version` | 自动版本管理（5 种 bump） | 24 次成功 |
+| `apex-mixed` | `Jenkinsfile-mixed` | 混合场景 | 26 次成功 |
+
+### 17.2 启动环境
+
+```bash
+# 启动 Jenkins（连同 Nexus / Registry）
+docker compose -f docker/test-env/docker-compose.yml up -d
+
+# 等待 ready
+until curl -fsS http://localhost:8080/ >/dev/null; do sleep 5; done
+```
+
+`docker/test-env/jenkins/init.groovy.d/01-seed.groovy` 会自动注册上述 6 个任务 + `apex-ci-library-local` 共享库。共享库指向挂载的 `/var/jenkins_home/pipeline`（本仓库根目录）。
+
+### 17.3 触发单个任务
+
+```bash
+JENKINS_USER=admin
+JENKINS_PASS=admin   # 本地测试环境默认密码
+
+curl -X POST "http://${JENKINS_USER}:${JENKINS_PASS}@localhost:8080/job/apex-build-java/build"
+```
+
+UI：在浏览器打开 `http://localhost:8080` → 登录 → 左侧栏选择任务 → Build Now。
+
+### 17.4 完整模板
+
+#### 17.4.1 `Jenkinsfile-build-java` 模板
+
+```groovy
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+    options { timeout(time: 20, unit: 'MINUTES'); disableConcurrentBuilds() }
+
+    parameters {
+        string(name: 'MVN_GOALS',  defaultValue: 'verify', description: 'Maven goals')
+        string(name: 'SAMPLE_DIR', defaultValue: 'docker/test-env/samples/java')
+        string(name: 'BUMP_TYPE',  defaultValue: 'patch', description: 'patch|minor|major|release|prerelease')
+    }
+
+    environment {
+        PIPELINE_ROOT = '/var/jenkins_home/pipeline'
+        BUILD_VERSION = '1.2.3'
+        BUILD_META    = 'jenkins-build'
+    }
+
+    stages {
+        stage('Compute Version') {
+            steps {
+                script {
+                    String v = apexVersion.auto([
+                        BUILD_VERSION: env.BUILD_VERSION,
+                        BUMP_TYPE    : params.BUMP_TYPE,
+                        BUILD_META   : env.BUILD_META,
+                    ])
+                    env.APP_VERSION = v
+                }
+            }
+        }
+        stage('Build') {
+            steps {
+                dir("${env.PIPELINE_ROOT}/${params.SAMPLE_DIR}") {
+                    script {
+                        String goals = params.MVN_GOALS
+                        apex {
+                            apexBuild('java') {
+                                jdk        = 11
+                                buildTool  = 'maven'
+                                goals      = goals.split('\\s+') as List
+                                params { flag('--batch-mode'); flag('-DskipITs') }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage('Verify Artifact') {
+            steps {
+                script {
+                    String jar = "${env.PIPELINE_ROOT}/${params.SAMPLE_DIR}/target/demo.jar"
+                    if (!fileExists(jar)) error "Expected jar not produced: ${jar}"
+                }
+            }
+        }
+    }
+}
+```
+
+#### 17.4.2 `Jenkinsfile-parallel-build` 模板
+
+```groovy
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+    parameters {
+        booleanParam(name: 'RUN_JAVA',   defaultValue: true)
+        booleanParam(name: 'RUN_NODE',   defaultValue: true)
+        booleanParam(name: 'RUN_PYTHON', defaultValue: true)
+        booleanParam(name: 'RUN_GO',     defaultValue: true)
+    }
+    environment { PIPELINE_ROOT = '/var/jenkins_home/pipeline' }
+
+    stages {
+        stage('Parallel Multi-Language Build') {
+            steps {
+                script {
+                    Map<String, Closure> branches = [:]
+                    if (params.RUN_JAVA) {
+                        branches['java'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/java") {
+                                apexBuild('java') {
+                                    jdk = 11; buildTool = 'maven'
+                                    goals = ['-B', 'package']
+                                    params { flag('--batch-mode'); flag('-DskipITs') }
+                                }
+                            }
+                        }
+                    }
+                    if (params.RUN_NODE) {
+                        branches['node'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/node") {
+                                apexBuild('node') {
+                                    packageManager = 'npm'
+                                    install = true
+                                    scripts = ['test']
+                                }
+                            }
+                        }
+                    }
+                    if (params.RUN_PYTHON) {
+                        branches['python'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/python") {
+                                apexBuild('python') {
+                                    venv = false
+                                    commands = ['install', '--quiet', '--break-system-packages', 'pytest']
+                                }
+                            }
+                        }
+                    }
+                    if (params.RUN_GO) {
+                        branches['go'] = {
+                            dir("${env.PIPELINE_ROOT}/docker/test-env/samples/go") {
+                                apexBuild('go') {
+                                    commands = ['build', './...']
+                                }
+                            }
+                        }
+                    }
+                    parallel(branches)
+                }
+            }
+        }
+    }
+}
+```
+
+#### 17.4.3 `Jenkinsfile-wait-scan` 模板
+
+```groovy
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+    parameters {
+        string(name: 'SCAN_FAIL_BRANCH', defaultValue: '',
+               description: 'sast|sca|container|license|<empty=ok>')
+        booleanParam(name: 'ENABLE_LICENSE', defaultValue: true)
+        string(name: 'SCAN_TIMEOUT_MIN', defaultValue: '5')
+    }
+
+    stages {
+        stage('Wait for scan results') {
+            steps {
+                script {
+                    String fail = (params.SCAN_FAIL_BRANCH ?: '').toLowerCase()
+                    int sleepMs = 800
+                    long started = System.currentTimeMillis()
+
+                    def runner = apexScan {
+                        sast { ->
+                            if (fail == 'sast') throw new RuntimeException("SAST down")
+                            Thread.sleep(sleepMs)
+                            return [scanner: 'sast', status: 'OK', high: 0, medium: 2, low: 5]
+                        }
+                        sca { ->
+                            if (fail == 'sca') throw new RuntimeException("SCA down")
+                            Thread.sleep(sleepMs)
+                            return [scanner: 'sca', status: 'OK', high: 0]
+                        }
+                        container('apex-sample:1.0.0') { ->
+                            if (fail == 'container') throw new RuntimeException("trivy failed")
+                            Thread.sleep(sleepMs)
+                            return [scanner: 'container', status: 'OK', high: 0, medium: 1]
+                        }
+                    }
+                    runner.timeoutMin = (params.SCAN_TIMEOUT_MIN ?: '5').toLong()
+                    runner.failOn = ['high', 'critical']
+                    def results = runner.run()
+                    long elapsed = System.currentTimeMillis() - started
+                    if (elapsed < 4 * sleepMs) error "Scanners returned too fast; not parallel"
+                    runner.assertPassed(results)
+                }
+            }
+        }
+    }
+}
+```
+
+#### 17.4.4 `Jenkinsfile-version` 模板
+
+```groovy
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+    parameters {
+        string(name: 'BASE_VERSION', defaultValue: '1.2.3')
+        string(name: 'BUMP_TYPE',    defaultValue: 'patch', description: 'patch|minor|major|release|prerelease')
+        string(name: 'PRE_TAG',      defaultValue: 'rc.1')
+        string(name: 'BUILD_META',   defaultValue: 'jenkins')
+    }
+
+    stages {
+        stage('Explicit Bump') {
+            steps {
+                script {
+                    String baseV  = params.BASE_VERSION
+                    String bumpT  = params.BUMP_TYPE
+                    String preR   = params.PRE_TAG
+                    String buildM = params.BUILD_META
+                    def pair = apexVersion.bump(baseV, bumpT) {
+                        buildMeta     = buildM
+                        preReleaseTag = preR
+                    }
+                    def next = pair[0]
+                    def mgr  = pair[1]
+                    env.APP_VERSION = next
+                    echo "Bump: ${baseV} --${bumpT}--> ${next}".toString()
+                    echo "Manager: base=${mgr.baseVersion} bump=${mgr.bump} pre=${mgr.preReleaseTag} meta=${mgr.buildMeta}".toString()
+                }
+            }
+        }
+    }
+}
+```
+
+#### 17.4.5 `Jenkinsfile-mixed` 模板
+
+```groovy
+@Library('apex-ci-library-local@main') _
+
+pipeline {
+    agent any
+    options { timeout(time: 30, unit: 'MINUTES') }
+    parameters {
+        string(name: 'BASE_VERSION',  defaultValue: '1.0.0')
+        string(name: 'BUMP_TYPE',     defaultValue: 'minor')
+        booleanParam(name: 'RUN_PARALLEL', defaultValue: true)
+        booleanParam(name: 'RUN_SCAN',     defaultValue: true)
+    }
+    environment { PIPELINE_ROOT = '/var/jenkins_home/pipeline' }
+
+    stages {
+        stage('1. Auto Version') {
+            steps {
+                script {
+                    def v = apexVersion.auto([
+                        BUILD_VERSION: params.BASE_VERSION,
+                        BUMP_TYPE    : params.BUMP_TYPE,
+                        BUILD_META   : 'jenkins-mixed',
+                    ])
+                    env.APP_VERSION = v
+                }
+            }
+        }
+        stage('2. Single Build (Java)') {
+            steps {
+                dir("${env.PIPELINE_ROOT}/docker/test-env/samples/java") {
+                    script {
+                        apex {
+                            apexBuild('java') {
+                                jdk = 11; buildTool = 'maven'
+                                goals = ['verify']
+                                params { flag('--batch-mode'); flag('-DskipITs') }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage('3. Parallel Multi-Language Build') {
+            when { expression { return params.RUN_PARALLEL } }
+            steps {
+                script {
+                    def branches = [:]
+                    branches['java'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/java") {
+                            apexBuild('java') { jdk = 11; buildTool = 'maven'; goals = ['-B', 'test'] }
+                        }
+                    }
+                    branches['node'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/node") {
+                            apexBuild('node') { packageManager = 'npm'; install = true; scripts = ['test'] }
+                        }
+                    }
+                    branches['python'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/python") {
+                            apexBuild('python') { venv = false; commands = ['install', '--quiet', '--break-system-packages', 'pytest'] }
+                        }
+                    }
+                    branches['go'] = {
+                        dir("${env.PIPELINE_ROOT}/docker/test-env/samples/go") {
+                            apexBuild('go') { commands = ['build', './...'] }
+                        }
+                    }
+                    parallel(branches)
+                }
+            }
+        }
+        stage('4. Wait for Scan') {
+            when { expression { return params.RUN_SCAN } }
+            steps {
+                script {
+                    int sleepMs = 600
+                    long started = System.currentTimeMillis()
+                    def runner = apexScan {
+                        sast    { -> Thread.sleep(sleepMs); return [scanner: 'sast',    status: 'OK', high: 0, medium: 1] }
+                        sca     { -> Thread.sleep(sleepMs); return [scanner: 'sca',     status: 'OK', high: 0] }
+                        container('apex-sample:1.0.0') { -> Thread.sleep(sleepMs); return [scanner: 'container', status: 'OK', high: 0] }
+                    }
+                    runner.failOn = ['high', 'critical']
+                    def results = runner.run()
+                    long elapsed = System.currentTimeMillis() - started
+                    if (elapsed > (long)(3 * sleepMs * 1.5)) error "Scanners took ${elapsed} ms; not parallel"
+                    runner.assertPassed(results)
+                }
+            }
+        }
+        stage('5. Retry on Transient Failure') {
+            steps {
+                script {
+                    int attempt = 0
+                    def result = apexRetry.linear(5, 100) { ->
+                        attempt++
+                        if (attempt < 3) throw new RuntimeException("simulated 502 (attempt ${attempt})")
+                        return 'recovered'
+                    }
+                    echo "Retry recovered: ${result} after ${attempt} attempts"
+                }
+            }
+        }
+    }
+}
+```
+
+### 17.5 常见 CPS 沙箱陷阱
+
+写 Jenkinsfile 时要避开这些坑：
+
+| 陷阱 | 解决 |
+| --- | --- |
+| `apexConfig.fromYaml(text)` 被误判为 DSL 步骤 | 改用 `apexConfig { fromYaml text: '...' }` 闭包形式 |
+| `void track(...)` 被误判 | 改为返回 `String` |
+| `apexBuild { ... }` 闭包内 `params.X` 解析为 builder config 的 `params` 字段 | 把 `params` 复制到闭包外：`String buildM = params.BUILD_META` |
+| `summary` 阶段在 `node {}` 外 → CPS 拒绝 | 把 Summary 移至 `node` 内部 |
+| `mvn clean` 因 mount 跨用户权限失败 | 移除 `clean`，用 `package` / `verify` |
+| Python 3.13+ `externally-managed-environment` | 显式加 `--break-system-packages` |
+| 业务方忘了 `@Library('apex-ci-library-local@main') _` | 必须以 `_` 结尾（沙箱模式） |
+
+### 17.6 验证结果
+
+每个任务在 `Console Output` 末尾输出 `[PASS]` 字样。`apex-modules-test` 还会在 stage 14 末输出：
+
+```
+==========================================
+  APEX MODULE TEST SUMMARY: 62/62 passed, 0 failed
+==========================================
+```
+
+`apex-mixed` 会在 post 阶段输出：
+
+```
+==============================
+  MIXED PIPELINE SUMMARY
+  APP_VERSION=1.1.0+jenkins-mixed
+==============================
+```
+
+详细的 CPS 沙箱陷阱与设计动机参见 [design.md §19.8](./design.md#198-cps-沙箱陷阱与解决方案)。

@@ -49,12 +49,23 @@ class NodeBuilderTest {
         def s = f.s
         new NodeBuilder().execute(ctx, { packageManager = 'npm'; scripts = ['install', 'test'] })
         Assert.assertTrue(s.shCalls.size() >= 1)
-        String cmd = s.shCalls[0].script as String
-        Assert.assertTrue(cmd.contains('npm'))
-        Assert.assertTrue(cmd.contains('install'))
-        Assert.assertTrue(cmd.contains('test'))
-        // npm run <script> 形式
-        Assert.assertTrue(cmd.contains('run'))
+        // shCalls[0] = implicit install step, shCalls[1] = first script, ...
+        // Windows 上 platformAdapt 会把 'npm' 变成 'npm.cmd'
+        String installCmd = s.shCalls[0].script as String
+        Assert.assertTrue("expected npm in install cmd: ${installCmd}".toString(), installCmd.contains('npm'))
+        Assert.assertTrue(installCmd.contains('install'))
+        // 验证 scripts 中的每个项都通过 `npm run <name>` 执行
+        // 渲染后的 bash 脚本把每个 arg 单独成行，所以按行检查
+        boolean hasRunInstall = s.shCalls.any { Map call ->
+            String c = call.script as String
+            (c.contains("'npm'") || c.contains("'npm.cmd'")) && c.contains("'run'") && c.contains("'install'")
+        }
+        boolean hasRunTest = s.shCalls.any { Map call ->
+            String c = call.script as String
+            (c.contains("'npm'") || c.contains("'npm.cmd'")) && c.contains("'run'") && c.contains("'test'")
+        }
+        Assert.assertTrue("expected `npm run install` in one of:\n${s.shCalls*.script}".toString(), hasRunInstall)
+        Assert.assertTrue("expected `npm run test` in one of:\n${s.shCalls*.script}".toString(), hasRunTest)
     }
 
     @Test
@@ -63,9 +74,11 @@ class NodeBuilderTest {
         def ctx = f.ctx
         def s = f.s
         new NodeBuilder().execute(ctx, { packageManager = 'yarn'; scripts = ['build'] })
-        String cmd = s.shCalls[0].script as String
-        Assert.assertTrue(cmd.contains('yarn'))
-        Assert.assertTrue(cmd.contains('build'))
+        boolean hasYarnBuild = s.shCalls.any { Map call ->
+            String c = call.script as String
+            (c.contains("'yarn'") || c.contains("'yarn.cmd'")) && c.contains("'run'") && c.contains("'build'")
+        }
+        Assert.assertTrue("expected `yarn run build` in one of:\n${s.shCalls*.script}".toString(), hasYarnBuild)
     }
 
     @Test
@@ -74,10 +87,16 @@ class NodeBuilderTest {
         def ctx = f.ctx
         def s = f.s
         new NodeBuilder().execute(ctx, { packageManager = 'pnpm'; scripts = ['ci', 'test'] })
-        String cmd = s.shCalls[0].script as String
-        Assert.assertTrue(cmd.contains('pnpm'))
-        Assert.assertTrue(cmd.contains('ci'))
-        Assert.assertTrue(cmd.contains('test'))
+        boolean hasRunCi = s.shCalls.any { Map call ->
+            String c = call.script as String
+            (c.contains("'pnpm'") || c.contains("'pnpm.cmd'")) && c.contains("'run'") && c.contains("'ci'")
+        }
+        boolean hasRunTest = s.shCalls.any { Map call ->
+            String c = call.script as String
+            (c.contains("'pnpm'") || c.contains("'pnpm.cmd'")) && c.contains("'run'") && c.contains("'test'")
+        }
+        Assert.assertTrue("expected `pnpm run ci` in one of:\n${s.shCalls*.script}".toString(), hasRunCi)
+        Assert.assertTrue("expected `pnpm run test` in one of:\n${s.shCalls*.script}".toString(), hasRunTest)
     }
 
     @Test
@@ -90,9 +109,10 @@ class NodeBuilderTest {
             scripts = ['build']
             params { flag('--legacy-peer-deps'); property('registry', 'https://r.example.com') }
         })
-        String cmd = s.shCalls[0].script as String
-        Assert.assertTrue(cmd.contains('--legacy-peer-deps'))
-        Assert.assertTrue(cmd.contains('registry=https://r.example.com'))
+        // 找最后一条 `npm run build` 调用
+        String allCmds = s.shCalls.collect { it.script as String }.join('\n')
+        Assert.assertTrue(allCmds.contains('--legacy-peer-deps'))
+        Assert.assertTrue(allCmds.contains('registry=https://r.example.com'))
     }
 
     @Test

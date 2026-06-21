@@ -39,8 +39,10 @@ class ParallelBuildTest {
 
         // 4 个分支都返回结果
         Assert.assertEquals(4, out.size())
-        // sh 被调用 4 次（每种语言 1 次）
-        Assert.assertEquals(4, script.shCalls.size())
+        // sh 至少被调用 4 次（每种语言至少 1 次）。
+        // 实际可能更多：node 在 scripts 之外还会跑 install，python/go 也会跑多个 commands。
+        Assert.assertTrue("expected at least 4 shCalls, got ${script.shCalls.size()}".toString(),
+            script.shCalls.size() >= 4)
 
         // 验证每种语言的命令特征（注意：Windows 上 platformAdapt 会加 .cmd 后缀）
         def cmds = script.shCalls.collect { it.script as String }

@@ -3,7 +3,7 @@
 > **包名**：`com.hsbc.treasury.apex.ci`
 > **版本**：v2.0.0（Lightweight）
 > **目标读者**：参与本库开发 / 扩展的工程师、CI 平台维护者
-> **最后更新**：2026-06-20
+> **最后更新**：2026-06-21
 
 ---
 
@@ -23,6 +23,9 @@
 12. [调试与排错](#12-调试与排错)
 13. [代码规范与 Lint](#13-代码规范与-lint)
 14. [从 v1.x 迁移](#14-从-v1x-迁移)
+15. [扩展：自动版本管理 `apexVersion`](#15-扩展自动版本管理-apexversion)
+16. [扩展：ConfigBuilder 与 ConfigParserHelper](#16-扩展configbuilder-与-configparserhelper)
+17. [6 个端到端 Jenkinsfile 的设计与维护](#17-6-个端到端-jenkinsfile-的设计与维护)
 
 ---
 
@@ -32,21 +35,23 @@
 
 | 工具 | 版本 | 用途 |
 | --- | --- | --- |
-| JDK | 17 / 21 | Groovy / Java 编译 |
-| Groovy | 4.0.x | Library 语言（自带编译器，无需 Gradle） |
-| JUnit | 4.12 | 单元测试 |
+| JDK | 11 / 17 / 21 | Groovy / Java 编译（Maven 强制 11+） |
+| Maven | 3.6+ | 构建与依赖管理（也支持 `./mvnw`） |
+| Groovy | 4.0.x | Library 语言（由 `gmavenplus-plugin` 自动拉取） |
+| JUnit | 4.13.2 | 单元测试（由 `maven-surefire-plugin` 跑） |
 | Hamcrest | 1.3 | 断言库 |
 | Jenkins | 2.426.x LTS | 本地集成测试（推荐 Docker） |
 | Docker | 24+ | buildx / 集成环境 |
 | Nexus3 | 3.x | 集成测试用制品库 |
 | Registry | v2 | 集成测试用镜像库 |
 
-> **轻量化原则**：本仓库**不依赖 Gradle / Maven**，直接用 `groovyc` 编译。`build.sh` / `build.bat` 是独立的编译脚本，避免在沙箱 Jenkins 上跑构建时还要解决 Gradle 依赖网络问题。
+> **Maven 化迁移（2026-06）**：本项目从 `groovyc` + `JUnitCore` 升级到 **Maven**。
+> `pom.xml` 统一管理依赖、插件与构建产物；`build.sh` / `build.bat` 现在是 Maven 的薄包装入口。
 
 ### 1.2 推荐 IDE
 
-- **IntelliJ IDEA Ultimate**（自带 Jenkins / Groovy 插件）
-- VS Code + `Groovy Lint` 扩展
+- **IntelliJ IDEA Ultimate**（自带 Jenkins / Groovy 插件；可直接 import 为 Maven 项目）
+- VS Code + `Groovy Lint` 扩展 + `Maven for Java` 扩展
 
 ### 1.3 本地启动 Jenkins（集成测试）
 
@@ -59,14 +64,20 @@ bash docker/test-env/test-it.sh
 ### 1.4 本地构建 + 单测
 
 ```bash
-# Linux / macOS / Git-Bash
-./build.sh
+# 推荐：Maven 直接
+mvn clean test                    # 编译 + 跑所有 *Test / *Tests / *Spec
 
-# Windows 原生 cmd
+# 薄包装（参数与 Maven 生命周期目标一一对应）
+./build.sh                        # = mvn test
+./build.sh -compile               # = mvn compile
+./build.sh -package               # = mvn package
+./build.sh -verify                # = mvn verify
+./build.sh -skipTests             # = mvn test -DskipTests
+
+# Windows cmd
 build.bat
+build.bat -package
 ```
-
-> 这两个脚本会自动编译 `src/` 和 `test/`，用 `JUnitCore` 跑所有 `*Test.groovy` 类。
 
 挂载本库到本地 Jenkins：
 
@@ -80,6 +91,8 @@ docker cp . jenkins-dev:/var/jenkins_home/jobs/apex-ci-library/workspace/
 > - Name: `apex-ci-library`
 > - Default version: `main`
 > - Source: `Modern SCM` → Git → 本库仓库
+>
+> 也可以把 `target/apex-ci-library-*.jar` 复制到 Jenkins 的 shared library 目录，按 JAR 模式加载。
 
 ---
 
@@ -89,47 +102,57 @@ docker cp . jenkins-dev:/var/jenkins_home/jobs/apex-ci-library/workspace/
 
 ```
 apex-ci-library/
-├── src/                                  # 主源码（与发布产物一致）
-│   └── com/hsbc/treasury/apex/ci/
-│       ├── core/                         # PipelineContext / Retry / DynamicParams / Sleeper
-│       ├── builders/                     # AbstractBuilder + 各语言实现 + Factory
-│       ├── scanners/                     # ScanRunner / ScanResult
-│       ├── docker/                       # DockerBuilder / DockerPusher
-│       ├── artifact/                     # NexusClient / ArtifactPublisher
-│       ├── reporters/                    # ConsoleReporter
-│       ├── notifiers/                    # EmailNotifier
-│       ├── config/                       # LibraryConfig（YAML/Properties/JSON）
-│       ├── utils/                        # Sandbox / Util / ProjectDetector
-│       └── errors/                       # ApexCIException / BuildException / ScanException
+├── pom.xml                              # Maven 配置（gmavenplus + surefire + 依赖管理）
+├── build.sh / build.bat                 # Maven 薄包装（参数 → mvn 生命周期目标）
 │
-├── test/                                 # 单元 + 集成测试
-│   └── com/hsbc/treasury/apex/ci/
-│       ├── integration/                  # 轻量级 DSL 集成测试
-│       └── ...
+├── src/main/groovy/com/hsbc/treasury/apex/ci/    # 主源码（Maven 标准布局）
+│   ├── core/                            # PipelineContext / Retry / DynamicParams / Sleeper
+│   ├── builders/                        # AbstractBuilder + 各语言实现 + Factory
+│   ├── scanners/                        # ScanRunner / ScanResult
+│   ├── docker/                          # DockerBuilder / DockerPusher
+│   ├── artifact/                        # NexusClient / ArtifactPublisher
+│   ├── reporters/                       # ConsoleReporter
+│   ├── notifiers/                       # EmailNotifier
+│   ├── config/                          # LibraryConfig（YAML/Properties/JSON）
+│   ├── utils/                           # Sandbox / Util / ProjectDetector
+│   ├── version/                         # SemVer / VersionManager
+│   └── errors/                          # ApexCIException / BuildException / ScanException
 │
-├── vars/                                 # 全局 DSL（apex / apexBuild / apexScan / ...）
+├── src/test/groovy/com/hsbc/treasury/apex/ci/    # 单元 + 集成测试
+│   ├── integration/                     # 轻量级 DSL 集成测试
+│   └── ...                              # 各包下 *Test.groovy
 │
-├── docker/test-env/                      # 集成测试 Docker Compose
-├── docs/                                 # design.md / user-guide.md / developer-guide.md
-├── Jenkinsfile                           # 库的自检（被 Jenkinsfile-modules 替代为更全面测试）
-├── build.sh / build.bat                  # groovyc 编译 + JUnit
+├── vars/                                # 全局 DSL（apex / apexBuild / apexScan / ...）
+│                                       # 打包时复制到 JAR 的 vars/ 目录，Jenkins 可直接加载
+├── resources/                           # libraryResource(...) 资源（JCasC / templates）
+│
+├── docker/test-env/                     # 集成测试 Docker Compose
+├── docs/                                # design.md / user-guide.md / developer-guide.md
+├── Jenkinsfile                          # 库的自检（调用 build.sh / build.bat）
 └── README.md
 ```
 
-> **轻量化原则**：
-> - 不使用 `build.gradle` / `gradlew`，避免在 CI 容器内拉取 Gradle 依赖。
-> - `src/` 直接作为发布产物被 Jenkins 加载，无需 IDE 友好的"双源目录"。
-> - 编译产物直接落到 `out/` 即可，不需要 `build/libs/*.jar`。
+> **Maven 化要点**：
+> - 标准目录 `src/main/groovy`（主源）+ `src/test/groovy`（测试），IDE 一键识别。
+> - `vars/` 和 `resources/` 不进 Groovy 编译，由 `pom.xml` 的 `<resources>` 配置原样复制到 JAR。
+> - 编译产物在 `target/classes`（主）+ `target/test-classes`（测试）；JAR：`target/apex-ci-library-1.0.0-SNAPSHOT.jar`。
+> - 不再保留 `out/` 旧编译目录；删除它即可，无副作用。
 
-### 2.2 build.sh / build.bat 关键约定
+### 2.2 build.sh / build.bat / pom.xml 关键约定
 
 | 项 | 路径 | 说明 |
 | --- | --- | --- |
-| 主源码 | `src/` | 唯一来源 |
-| 测试 | `test/` | 唯一来源 |
-| 全局变量 | `vars/` | 由 Jenkins 直接读取，不编译 |
-| 编译输出 | `out/` | 调试用，发布时随仓库一起发即可 |
-| 单测运行器 | `JUnitCore` | 标准 JDK 即可，无需 surefire |
+| 主源码 | `src/main/groovy/` | Maven 标准 |
+| 测试 | `src/test/groovy/` | Maven 标准 |
+| 全局变量 | `vars/` | 由 `pom.xml` 的 `<resources>` 复制到 JAR 的 `vars/`，Jenkins 直接读取 |
+| 库资源 | `resources/` | 同样由 `<resources>` 复制到 JAR 的 `resources/` |
+| 编译输出 | `target/classes` / `target/test-classes` | Maven 标准 |
+| 打包输出 | `target/apex-ci-library-1.0.0-SNAPSHOT.jar` | 含全部 `.class` + `vars/` + `resources/` |
+| 单测运行器 | `maven-surefire-plugin` | 匹配 `**/Test*.class` / `**/*Test.class` / `**/*Tests.class` / `**/*Spec.class`，排除 `MockScript` |
+| Groovy 编译 | `gmavenplus-plugin` | 自动从 `<groovy.version>` 拉取对应版本的 groovy |
+| 跳过测试 | `mvn -DskipTests ...` 或 `mvn -DskipTests -Pskip-tests` | 两套方式都支持 |
+
+> **关于 `MockScript`**：单测里的 `MockScript` 类**不会**被 surefire 跑（`pom.xml` 的 `<excludes>` 显式排除了 `**/MockScript*.class`），它只作为测试辅助类被引用。
 
 ---
 
@@ -389,7 +412,7 @@ class ConsoleReporter implements Serializable {
 #### 1) 定义 Config 类
 
 ```groovy
-// src/com/hsbc/treasury/apex/ci/builders/RustBuildConfig.groovy
+// src/main/groovy/com/hsbc/treasury/apex/ci/builders/RustBuildConfig.groovy
 package com.hsbc.treasury.apex.ci.builders
 
 import com.hsbc.treasury.apex.ci.core.DynamicParams
@@ -409,7 +432,7 @@ class RustBuildConfig implements Serializable {
 #### 2) 实现 Builder
 
 ```groovy
-// src/com/hsbc/treasury/apex/ci/builders/RustBuilder.groovy
+// src/main/groovy/com/hsbc/treasury/apex/ci/builders/RustBuilder.groovy
 package com.hsbc.treasury.apex.ci.builders
 
 import com.hsbc.treasury.apex.ci.core.PipelineContext
@@ -449,7 +472,7 @@ class RustBuilder extends AbstractBuilder {
 #### 3) 注册到 Factory
 
 ```groovy
-// src/com/hsbc/treasury/apex/ci/builders/BuilderFactory.groovy
+// src/main/groovy/com/hsbc/treasury/apex/ci/builders/BuilderFactory.groovy
 static {
     REGISTRY['rust'] = new RustBuilder()
     ...
@@ -825,26 +848,34 @@ curl -X POST "$JENKINS_URL/job/sandbox-replay/build" --user "$USER:$TOKEN"
         ├────────────────────┤
         │ 集成（MockScript） │  ← LightweightDslTest 覆盖并行/扫描/重试
         ├────────────────────┤
-        │    单元测试        │  ← JUnit 4 + groovyc
+        │    单元测试        │  ← JUnit 4 + maven-surefire-plugin
         └────────────────────┘
 ```
 
-### 10.2 单元测试
-
-使用 `groovyc` 直接编译，`JUnitCore` 运行：
+### 10.2 单元测试（Maven）
 
 ```bash
-./build.sh
-# 编译 src/ → out/classes
-# 编译 test/ → out/test-classes
-# 拷贝 junit/hamcrest/groovy 到 out/lib
-# 运行 JUnitCore out/test-classes com.hsbc.treasury.apex.ci...
+# Maven 标准命令
+mvn clean test
+# 编译 src/main/groovy → target/classes
+# 编译 src/test/groovy → target/test-classes
+# 跑所有 *Test / *Tests / *Spec（排除 MockScript）
+# 输出到 target/surefire-reports/
+
+# 或用薄包装
+./build.sh                       # = mvn test
+./build.sh -skipTests            # 跳过测试
 ```
+
+> **surefire 匹配规则**（见 `pom.xml`）：
+> - 包含：`**/Test*.class` / `**/*Test.class` / `**/*Tests.class` / `**/*Spec.class`
+> - 排除：`**/MockScript*.class`（辅助类，不应当作测试）
+> - Provider：`org.apache.maven.surefire.junit4.JUnit4Provider`（`surefire-junit4` 强制走 JUnit 4）
 
 ### 10.3 MockScript — 模拟 Jenkins script
 
 ```groovy
-// test/com/hsbc/treasury/apex/ci/utils/MockScript.groovy
+// src/test/groovy/com/hsbc/treasury/apex/ci/utils/MockScript.groovy
 class MockScript {
     List<Map> shCalls = []
     List<String> echos = []
@@ -869,7 +900,7 @@ class MockScript {
 
 ### 10.4 集成测试：LightweightDslTest
 
-`test/com/hsbc/treasury/apex/ci/integration/LightweightDslTest.groovy` 覆盖：
+`src/test/groovy/com/hsbc/treasury/apex/ci/integration/LightweightDslTest.groovy` 覆盖：
 
 | 用例 | 验证 |
 | --- | --- |
@@ -923,25 +954,32 @@ class MockScript {
 - `MINOR`：向后兼容的功能新增
 - `PATCH`：Bug 修复
 
+> **POM 版本**（`pom.xml`）：`1.0.0-SNAPSHOT`（开发中）→ `1.0.0`（发布）
+> **Jenkinsfile 引用**（`@Library('apex-ci-library@1.0.0') _`）需与 POM 版本对齐。
+
 ### 11.2 发布步骤
 
 ```bash
 # 1) 切到 main，确保最新
 git checkout main && git pull
 
-# 2) 跑全量检查
-./build.sh
+# 2) 跑全量检查（Maven 标准化）
+mvn clean verify
 bash docker/test-env/test-it.sh
 
 # 3) 更新 CHANGELOG.md
-# 4) 提交
-git add CHANGELOG.md
-git commit -m "release: v2.0.0"
+# 4) 把 pom.xml 的 <version> 改为发布版本号
+# 5) 提交
+git add CHANGELOG.md pom.xml
+git commit -m "release: v1.0.0"
 git push
 
-# 5) 打 tag
-git tag -a v2.0.0 -m "v2.0.0"
-git push origin v2.0.0
+# 6) 打 tag
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+
+# 7) 部署到内部 Nexus（可选）
+mvn deploy -DskipTests
 ```
 
 ### 11.3 兼容性矩阵
@@ -963,9 +1001,9 @@ git push origin v2.0.0
 
 ### 12.1 本地 IDE 调试
 
-1. 在 IntelliJ 中打开 `apex-ci-library`
-2. 配置 Groovy SDK = 本地 groovy 4.0.x
-3. 标记 `src/` 为 Sources，`test/` 为 Test Sources，`vars/` 不参与编译
+1. 在 IntelliJ 中 `File → New → Project from Existing Sources` 选择 `pom.xml`
+2. 标记 `src/main/groovy` 为 Sources，`src/test/groovy` 为 Test Sources（IntelliJ 通常自动识别 Maven 布局）
+3. `vars/` 不参与编译（被识别为资源）
 4. 写一个测试类，构造 `MockScript` + `PipelineContext.builder().script(script).build()` 即可
 
 ### 12.2 远程调试真实 Jenkins
@@ -997,6 +1035,10 @@ tail -f /var/log/jenkins/script-approval.log | grep -i apex
 | `CPS exception` | 在 CPS 外用 `for` 循环 | 用 `while` + 状态字段 |
 | `parallel returned null` | 单分支走 fall-back | 检查 `entries.size() == 1` 路径 |
 | `apexScan 闭包外忘了 stage` | 业务方没在 stage 内 | 提示业务方包 stage |
+| `Maven: No goals have been specified` | `mvn` 没传 lifecycle phase | 显式加 `test` / `package` / `verify` |
+| `Maven: package does not exist` | 子模块依赖未拉到 | 跑 `mvn dependency:resolve` |
+| `Maven: surefire 跳过全部测试` | 用了 JUnit 5 但依赖还是 JUnit 4 | 确认 `surefire-junit4` provider 已生效 |
+| `gmavenplus: 编译错误出现在 .class 行号` | Groovy AST 错误 | 跑 `mvn -X compile` 拿完整堆栈 |
 
 ---
 
@@ -1029,16 +1071,16 @@ tail -f /var/log/jenkins/script-approval.log | grep -i apex
 
 ```bash
 # 使用 npm groovy-lint
-npx groovy-lint --config .groovylintrc.json --path src --path vars
+npx groovy-lint --config .groovylintrc.json --path src/main/groovy --path src/test/groovy --path vars
 ```
 
 ### 13.4 PR 流程
 
 1. Fork → Branch → 提交
-2. 跑 `./build.sh`（必须全绿）
+2. 跑 `mvn clean test`（必须全绿；等价 `./build.sh`）
 3. 跑 `bash docker/test-env/test-it.sh`（沙箱回放）
 4. 提交 PR 至 `apex-ci-library/main`
-5. CI 自动跑：单元测试 + 沙箱回放
+5. CI 自动跑：Maven 单元测试 + 沙箱回放
 6. Code Owner Review（≥ 1 人）
 7. 合并 → 自动构建 SNAPSHOT
 
@@ -1105,6 +1147,548 @@ node {
 
 ---
 
+## 15. 扩展：自动版本管理 `apexVersion`
+
+自动版本管理由 `apexVersion`（`vars/` 入口）+ `SemVer`（语义化版本解析与比较）+ `VersionManager`（核心规则）三层组成，遵循 [SemVer 2.0.0](https://semver.org/) 规范。
+
+### 15.1 模块结构
+
+```
+src/main/groovy/com/hsbc/treasury/apex/ci/version/
+├── SemVer.groovy          # 解析/比较/输出 (implements Comparable)
+└── VersionManager.groovy  # bump 规则 + manifest
+
+vars/apexVersion.groovy    # 业务方入口 (parse / tryParse / max / min / bump / auto)
+```
+
+### 15.2 `SemVer` —— 解析与比较
+
+```groovy
+class SemVer implements Comparable<SemVer>, Serializable {
+    private static final long serialVersionUID = 1L
+
+    final int major
+    final int minor
+    final int patch
+    final String pre         // null 或 "rc.1"
+    final String buildMeta   // null 或 "abc1234"
+
+    static SemVer parse(String text)              // 解析失败抛
+    static SemVer tryParse(String text)           // 解析失败返回 null
+
+    SemVer bumpPatch()                            // 1.2.3 → 1.2.4
+    SemVer bumpMinor()                            // 1.2.3 → 1.3.0
+    SemVer bumpMajor()                            // 1.9.9 → 2.0.0
+    SemVer toRelease()                            // 1.3.0-rc.5 → 1.3.0
+    SemVer withPreRelease(String pre)             // 1.3.0 → 1.3.0-rc.1
+    SemVer withBuild(String build)                // 1.2.3 → 1.2.3+abc
+
+    boolean isPreRelease() { pre != null }
+    int compareTo(SemVer other)                   // SemVer 2.0.0 优先级
+    String toString()                             // "1.2.3-rc.1+abc"
+}
+```
+
+**比较规则**（[SemVer 2.0.0 §11](https://semver.org/#spec-item-11)）：
+1. `MAJOR.MINOR.PATCH` 数字比较
+2. 数字相同但一个有 pre-release：pre-release **更小**（`1.2.3-rc.1 < 1.2.3`）
+3. pre-release 内部按 dot 分段比较；数字段按数字、字符串段按 ASCII
+4. build meta 不参与比较
+
+### 15.3 `VersionManager` —— bump 规则
+
+```groovy
+class VersionManager implements Serializable {
+    private static final long serialVersionUID = 1L
+
+    enum BumpType { PATCH, MINOR, MAJOR, RELEASE, PRERELEASE }
+
+    final PipelineContext ctx
+    final String baseVersion
+    final BumpType bump
+    final String preReleaseTag
+    final String buildMeta
+
+    String resolve()                    // 入口：返回最终版本字符串
+    SemVer getResolved()                 // 解析后的 SemVer（懒计算）
+
+    static VersionManager auto(PipelineContext ctx)   // 从 ctx.env 读
+}
+```
+
+**5 种 bump 行为**：
+
+| 输入 | BumpType | 输出 | 备注 |
+| --- | --- | --- | --- |
+| `1.2.3` | PATCH | `1.2.4` | 清空 pre 段 |
+| `1.2.3` | MINOR | `1.3.0` | 清空 pre 段 |
+| `1.9.9` | MAJOR | `2.0.0` | 清空 pre 段 |
+| `1.3.0-rc.5` | RELEASE | `1.3.0` | 去掉 pre 段 |
+| `1.3.0` | PRERELEASE | `1.3.0-rc.1` | 默认 `rc.1`；若已存在 rc.N 则 rc.N+1 |
+
+**预发布号的智能计算**：
+- `1.2.3` + `PRERELEASE` + `preReleaseTag=null` → `1.2.3-rc.1`
+- `1.2.3-rc.5` + `PRERELEASE` + `preReleaseTag=null` → `1.2.3-rc.6`（末位数字 +1）
+- `1.2.3-rc.5` + `PRERELEASE` + `preReleaseTag='beta.1'` → `1.2.3-beta.1`（覆盖默认 tag）
+
+### 15.4 `apexVersion.groovy` —— vars 入口
+
+```groovy
+import com.hsbc.treasury.apex.ci.version.SemVer
+import com.hsbc.treasury.apex.ci.version.VersionManager
+
+def parse(String text)                  // SemVer.parse，失败抛
+def tryParse(String text)               // SemVer.tryParse，失败返回 null
+def max(Comparable a, Comparable b)     // 取较大
+def min(Comparable a, Comparable b)     // 取较小
+def max(List versions)                  // 列表最大
+def min(List versions)                  // 列表最小
+
+def bump(String base, String bumpType, Closure body = null)
+//   body 可设 buildMeta / preReleaseTag
+//   返回 [next, VersionManager]
+
+def auto()                              // 从 ctx.env 读
+def auto(Map envMap)                    // 显式传 env（CPS 沙箱推荐）
+```
+
+### 15.5 决策记录（manifest）
+
+`VersionManager.resolve()` 把每次 bump 写入 `ctx.attrs['version.manifest']`：
+
+```groovy
+ctx.attrs['version.manifest'] = {
+    '1.3.0+abc1234' => [
+        base: '1.2.3',
+        bump: 'MINOR',
+        resolvedAt: 1719000000000
+    ],
+    '1.4.0-rc.1' => [
+        base: '1.3.0',
+        bump: 'PRERELEASE',
+        resolvedAt: 1719000001000
+    ]
+}
+```
+
+便于跨 stage 审计"谁、什么时候、为什么 bump"。
+
+### 15.6 单测覆盖
+
+`src/test/groovy/com/hsbc/treasury/apex/ci/integration/VersionUpgradeIntegrationTest.groovy` 覆盖：
+
+| 用例 | 验证 |
+| --- | --- |
+| `patchBump_1_2_3_yields_1_2_4` | `1.2.3 → 1.2.4` |
+| `minorBump_1_2_3_yields_1_3_0` | `1.2.3 → 1.3.0` |
+| `majorBump_1_9_9_yields_2_0_0` | `1.9.9 → 2.0.0` |
+| `releaseBump_1_3_0_rc_5_yields_1_3_0` | `1.3.0-rc.5 → 1.3.0` |
+| `prereleaseBump_1_3_0_yields_1_3_0_rc_1` | `1.3.0 → 1.3.0-rc.1` |
+| `prereleaseBump_increments_existing_rc` | `1.3.0-rc.5 → 1.3.0-rc.6` |
+| `bump_clearsPre_whenNotPrerelease` | `1.2.3-rc.5 + patch → 1.2.4`（无 rc） |
+| `auto_readsFromEnvMap` | `auto([BUILD_VERSION:...])` |
+| `auto_throwsWhenBaseMissing` | `envMap` 缺 `BUILD_VERSION` 抛 |
+| `semver_max_min` | `max(1.2.3-rc.1, 1.2.3) = 1.2.3` |
+| `compareTo_followsSemverSpec` | `1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0` |
+| `manifest_accumulatesAcrossCalls` | 多次 resolve 累加到 `version.manifest` |
+
+### 15.7 扩展点
+
+#### 15.7.1 新增 bump 类型
+
+1. 在 `VersionManager.BumpType` 枚举中添加新值（如 `HOTFIX`）
+2. 在 `VersionManager.applyBump()` 的 `switch` 里添加 case
+3. 在 `SemVer` 中添加对应的 `bumpHotfix()` 方法
+4. 单测 + 在 `apexVersion.groovy` 中允许新值透传
+
+#### 15.7.2 改写预发布 tag 规则
+
+`VersionManager.applyBump()` 的 `case BumpType.PRERELEASE` 分支控制 pre 段计算规则：
+
+```groovy
+case BumpType.PRERELEASE:
+    String pre = (preReleaseTag != null) ? preReleaseTag :
+        "rc.${(base.pre == null) ? 1 : bumpPreReleaseNumber(base) + 1}".toString()
+    return base.withPreRelease(pre)
+```
+
+业务方可扩展：
+- `bumpPreReleaseNumber()` 默认解析 `rc.N` → 末位 N
+- 业务方需要 `alpha.N` / `beta.N` / 自定义命名空间时，在这里重写
+
+#### 15.7.3 自定义 version 上下文
+
+`VersionManager.resolve()` 把决策写入 `ctx.attrs`：
+
+```groovy
+ctx.setAttr("version.base", base.toString())
+ctx.setAttr("version.next", next.toString())
+ctx.setAttr("version.bump", bump.name())
+Map manifest = (Map) ctx.getAttr("version.manifest", [:])
+manifest[next.toString()] = [...]
+ctx.setAttr("version.manifest", manifest)
+```
+
+业务方扩展时**不要**改这些 attr key —— 别的代码可能依赖。可以在 manifest 内部加自定义字段。
+
+### 15.8 CPS 沙箱约束
+
+`apexVersion.groovy` 在沙箱下的关键规则：
+
+1. **不要**在闭包内做反射 / 动态 import
+2. **不要**在 `auto()` 闭包内直接读 `ctx.env`（沙箱下可能不可靠）→ 改用 `auto(Map envMap)` 显式传
+3. **`bump()` 返回 `List`** 而非裸 `String`，因为 `VersionManager` 自身含状态，业务方后续 stage 可能要读
+4. **max / min** 的 Comparable 参数 CPS 下需要类型声明，签名 `def max(Comparable a, Comparable b)` 已满足
+
+### 15.9 与 `Jenkinsfile-version` 的对应
+
+`docker/test-env/jenkins/Jenkinsfile-version` 验证 5 种 bump：
+
+```groovy
+stage('Explicit Bump') {
+    def pair = apexVersion.bump(params.BASE_VERSION, params.BUMP_TYPE) {
+        buildMeta     = params.BUILD_META
+        preReleaseTag = params.PRE_TAG
+    }
+    def next = pair[0]    // "1.3.0+abc1234"
+    def mgr  = pair[1]    // VersionManager，可读 baseVersion/bump/preReleaseTag/buildMeta
+    env.APP_VERSION = next
+}
+```
+
+`Parse + Compare` 验证 SemVer 比较：
+
+```groovy
+def a = apexVersion.parse('1.2.3-rc.1')
+def b = apexVersion.parse('1.2.3')
+def c = apexVersion.parse('1.2.4')
+def older  = apexVersion.min(a, b)        // 1.2.3-rc.1
+def latest = apexVersion.max([a, b, c])   // 1.2.4
+```
+
+---
+
+## 16. 扩展：ConfigBuilder 与 ConfigParserHelper
+
+`apexConfig { fromYaml text: '...' }` 是业务方在沙箱下唯一能用的形式。它的 delegate 选型**不能**用 Map —— 详见 [design.md §13.1.1](./design.md#1311-configbuilder--闭包-delegate-选型)。
+
+### 16.1 `ConfigBuilder` —— 闭包 delegate 类
+
+`src/main/groovy/com/hsbc/treasury/apex/ci/config/ConfigBuilder.groovy`：
+
+```groovy
+class ConfigBuilder implements Serializable {
+    private static final long serialVersionUID = 1L
+
+    String text = null
+    String format = 'properties'
+
+    void fromYaml(Map args)      { text = args?.text?.toString(); format = 'yaml' }
+    void fromJson(Map args)      { text = args?.text?.toString(); format = 'json' }
+    void fromProperties(Map args){ text = args?.text?.toString(); format = 'properties' }
+
+    LibraryConfig resolve() {
+        if (text == null) throw new ApexCIException("apexConfig: must call fromYaml/...")
+        switch (format) {
+            case 'yaml':       return LibraryConfig.fromYamlLite(text)
+            case 'json':       return LibraryConfig.fromJson(text)
+            case 'properties': return LibraryConfig.fromProperties(text)
+        }
+    }
+}
+```
+
+**关键约束**：
+- `implements Serializable` 并显式 `serialVersionUID`（CPS 要求）
+- 必须是 Groovy **类**（不是 Map / Expando）—— GroovyClassDispatcher 才会在目标类上查找方法
+- 方法签名只接 `Map args`，避免 `def fromYaml(text)` 在 CPS 下被误判为 DSL 步骤
+
+### 16.2 `vars/apexConfig.groovy` 入口
+
+```groovy
+import com.hsbc.treasury.apex.ci.config.ConfigBuilder
+
+def call(Closure body) {
+    ConfigBuilder b = new ConfigBuilder()
+    body.delegate = b
+    body.resolveStrategy = Closure.DELEGATE_FIRST
+    body()
+    return b.resolve()
+}
+```
+
+**CPS 注意事项**：
+- **不要**在 `apexConfig` 内提供 `def fromYaml(text)` 这种 script-style 方法 —— CpsScript.invokeMethod 会绕过普通方法查找直接走 DSL 步骤。
+- **不要**用 `[:]`（Map）当 delegate —— 同样的问题。
+
+### 16.3 `ConfigParserHelper` —— 静态脚本解析器
+
+`src/main/groovy/com/hsbc/treasury/apex/ci/config/ConfigParserHelper.groovy`：
+
+```groovy
+class ConfigParserHelper implements Serializable {
+    private static final long serialVersionUID = 1L
+
+    static LibraryConfig fromYaml(String text)       { return LibraryConfig.fromYamlLite(text) }
+    static LibraryConfig fromJson(String text)       { return LibraryConfig.fromJson(text) }
+    static LibraryConfig fromProperties(String text) { return LibraryConfig.fromProperties(text) }
+}
+```
+
+业务方在 `script { }` 块里用：
+
+```groovy
+import com.hsbc.treasury.apex.ci.config.ConfigParserHelper
+
+script {
+    def cfg = ConfigParserHelper.fromYaml(readFile('apex-ci.yaml'))
+    echo cfg.getString('app.name', 'unknown')
+}
+```
+
+**为什么**：`apexConfig` 的 `call(Closure)` 路径走 `apexConfig { ... }`；但有些场景业务方已经拿到一段 text（比如 `readFile`），不愿写闭包 —— 此时用静态 helper。
+
+### 16.4 `LibraryConfig` —— 配置数据类
+
+`src/main/groovy/com/hsbc/treasury/apex/ci/config/LibraryConfig.groovy` 持有解析后的数据：
+
+```groovy
+class LibraryConfig implements Serializable {
+    private static final long serialVersionUID = 1L
+
+    private final Map<String, Object> root
+
+    static LibraryConfig fromYamlLite(String text)     // 内置轻量 YAML 解析
+    static LibraryConfig fromJson(String text)
+    static LibraryConfig fromProperties(String text)
+
+    String getString(String key, String defaultValue = null)
+    int getInt(String key, int defaultValue = 0)
+    List<String> getList(String key, List<String> defaultValue = [])
+    boolean getBoolean(String key, boolean defaultValue = false)
+    Map<String, Object> getMap(String key)
+}
+```
+
+**为什么用 `fromYamlLite` 而不是 SnakeYAML**：v2.0 强调"轻量"，不引入额外依赖。`fromYamlLite` 走内置解析器，支持两级嵌套（足以覆盖 90% 业务 YAML）。需要更复杂时可在 `fromYaml()` 重载里加 SnakeYAML 支持。
+
+### 16.5 扩展点
+
+#### 16.5.1 新增配置格式（如 TOML）
+
+1. 在 `LibraryConfig` 里加 `static fromToml(String text)` + 内置解析器
+2. 在 `ConfigBuilder` 里加 `void fromToml(Map args)`
+3. 业务方：`apexConfig { fromToml text: '...' }`
+
+#### 16.5.2 嵌套 key 解析
+
+`getString('app.name', default)` 当前只支持两级点分 key（`app.name` → `root.app.name`）。要支持无限嵌套可以改成：
+
+```groovy
+String getString(String key, String defaultValue = null) {
+    Object v = root
+    for (String part : key.split('\\.')) {
+        if (v instanceof Map && ((Map) v).containsKey(part)) {
+            v = ((Map) v).get(part)
+        } else {
+            return defaultValue
+        }
+    }
+    return v?.toString() ?: defaultValue
+}
+```
+
+#### 16.5.3 加密字段
+
+`getString('db.password', null)` 经常用于凭据。可以在 `getString` 之前做 `VaultClient.decrypt()` 调用 —— 但要避免引入对 Vault 的硬依赖（让 `LibraryConfig` 保持纯逻辑）。
+
+### 16.6 单测覆盖
+
+`src/test/groovy/com/hsbc/treasury/apex/ci/config/LibraryConfigTest.groovy`：
+
+| 用例 | 验证 |
+| --- | --- |
+| `fromYamlLite_parsesTwoLevelNesting` | `app.name` 嵌套读 |
+| `fromJson_parsesNested` | JSON 嵌套 |
+| `fromProperties_flat` | 简单 key=value |
+| `getString_returnsDefaultOnMissing` | 缺 key 返回 default |
+| `getList_returnsEmptyOnMissing` | 缺 key 返回 `[]` |
+| `getInt_returnsDefaultOnInvalid` | 非数字返回 default |
+
+---
+
+## 17. 6 个端到端 Jenkinsfile 的设计与维护
+
+仓库自带 6 个独立 Jenkinsfile，覆盖从单元 → 集成 → 端到端的所有典型 CI 场景。本节面向**要修改 / 扩展这些 Jenkinsfile** 的库维护者。
+
+### 17.1 任务清单
+
+`docker/test-env/jenkins/init.groovy.d/01-seed.groovy` 在 Jenkins 启动时自动注册 6 个任务：
+
+| 任务名 | 文件 | 用途 |
+| --- | --- | --- |
+| `apex-modules-test` | `Jenkinsfile-modules` | 全模块接口 + 集成用例，**每次改完库代码必跑** |
+| `apex-build-java` | `Jenkinsfile-build-java` | 单一 Java 构建，**改完 JavaBuilder/Maven 相关代码后跑** |
+| `apex-parallel-build` | `Jenkinsfile-parallel-build` | 4 语言并行构建，**改完 BuilderFactory/任何 Builder 后跑** |
+| `apex-wait-scan` | `Jenkinsfile-wait-scan` | 并行扫描 + 门禁，**改完 ScanRunner/apexScan 后跑** |
+| `apex-version` | `Jenkinsfile-version` | 自动版本管理，**改完 apexVersion/VersionManager/SemVer 后跑** |
+| `apex-mixed` | `Jenkinsfile-mixed` | 混合场景，**改完多个模块时跑（回归）** |
+
+### 17.2 设计原则
+
+#### 17.2.1 沙箱安全优先
+
+6 个 Jenkinsfile **必须**满足沙箱审计，否则本地 Jenkins 跑不起来：
+
+| 规则 | 反例 | 正例 |
+| --- | --- | --- |
+| `sh` 命令 | `sh "mvn $goal"` | `sh(script: ['mvn', goal])` |
+| `void` helper | `void track(...)` | `String track(...)` |
+| `apexConfig` 调用 | `apexConfig.fromYaml(text)` | `apexConfig { fromYaml text: text }` |
+| `Binding` 反射 | `binding.hasVariable(...)` 频繁读 | `binding.setVariable('__stats', ...)` 初始化一次 |
+| 动态 import | `loadClass(...)` | 静态 import |
+
+#### 17.2.2 不引入新库 API
+
+Jenkinsfile 里**只能**用：
+- Jenkins 原生：`stage / parallel / sh / script / dir / stash / unstash / parameters / environment / when / withCredentials / timeout / error / fileExists`
+- 库 vars：`apex{} / apexBuild{} / apexScan{} / apexRetry.xxx{} / apexDocker{} / apexPublish{} / apexConfig{} / apexVersion.xxx{}`
+- 标准 Java：`System.currentTimeMillis() / Thread.sleep / new File(...)`（沙箱下允许基本 I/O，但建议通过 `script.sh` / `script.readFile`）
+- 库 `src/` 类（通过 `import` + `new`）：仅在 `script { }` 块内
+
+**禁止**：
+- 业务方不能改库实现
+- 业务方不能引用第三方 Groovy 库（沙箱拒绝）
+- 业务方不能用 `evaluate` / `Class.forName` / 反射
+
+#### 17.2.3 可调试
+
+每个 stage 至少 1 行 `echo` 输出关键信息。失败时 `Console Output` 一眼能定位：
+
+```groovy
+stage('Build') {
+    steps {
+        echo "Building ${env.PIPELINE_ROOT}/docker/test-env/samples/java".toString()
+        dir(...) { ... }
+    }
+}
+```
+
+#### 17.2.4 容器权限规避
+
+Jenkins 容器内 `jenkins` 用户可能无法修改 host 挂载的目录（mount 跨 OS 用户权限问题）。所有 build 默认**不**带 `clean`：
+
+```groovy
+goals = ['verify']   // 不是 ['clean', 'verify']
+```
+
+#### 17.2.5 路径硬编码
+
+所有路径以 `/var/jenkins_home/pipeline` 为根，对应 `docker-compose.yml` 里的 bind mount：
+
+```yaml
+volumes:
+  - ../../../:/var/jenkins_home/pipeline
+```
+
+**不要**用 `${WORKSPACE}` —— `CpsFlowDefinition` 任务没有 checkout scm，`WORKSPACE` 不可靠。
+
+### 17.3 CPS 沙箱陷阱速查
+
+实现 6 个 Jenkinsfile 时踩过的坑（参见 [design.md §19.8](./design.md#198-cps-沙箱陷阱与解决方案)）：
+
+| 坑 | 解决方案 |
+| --- | --- |
+| `apexConfig.fromYaml(text)` 报 `No such DSL method` | 改用闭包 `apexConfig { fromYaml text: text }` |
+| `apexConfig { fromYaml text: '...' }` 报同样错误 | 检查 `ConfigBuilder` 类是否被正确编译（`build.sh`） |
+| `apexRetry.linear(...).execute { ... }` 闭包返回 null 抛 NPE | 确保闭包有返回值 |
+| `void track(...)` 被误判为 DSL 步骤 | 改为返回 `String`（`return ok ? 'PASS' : 'FAIL'`） |
+| `n.respondsTo(n, 'notify')` 在 CPS 下不稳定 | 直接断言字段 `n.@subject` |
+| `summary` 阶段在 `node {}` 外 → CPS 拒绝 | 把 Summary 移至 `node` 内部 |
+| `parallel branches: branches` 调用方式不识别 | 改为 `parallel(branches)`（Map 实参） |
+| `apexBuild { ... }` 闭包内 `params.X` 解析为 builder config 的 `params` 字段 | 把 params 复制到闭包外 |
+| 容器内 `mvn clean` 因 mount 跨用户权限失败 | 移除 `clean`，用 `package` / `verify` |
+| Python 3.13+ `externally-managed-environment` | 显式加 `--break-system-packages` |
+| `VersionManager.auto()` 找不到 `BUILD_VERSION` env | 显式传 `apexVersion.auto([BUILD_VERSION: ...])` |
+
+### 17.4 维护流程
+
+#### 17.4.1 修改库代码后
+
+1. 跑 `mvn clean test`（单元测试；等价 `bash build.sh`）
+2. 跑 `bash docker/test-env/test-it.sh`（外部系统集成）
+3. 在 Jenkins UI 触发相关的 Jenkinsfile：
+   - 改 builder → `apex-parallel-build`
+   - 改 scanner → `apex-wait-scan`
+   - 改 version → `apex-version`
+   - 改 ctx/config/notify → `apex-modules-test`
+   - 改混合场景相关 → `apex-mixed`
+
+#### 17.4.2 修改 Jenkinsfile 后
+
+1. 重启 Jenkins 或点击 `Reload Configuration from Disk`
+2. 手动触发对应任务
+3. 验证 `Console Output` 末尾的 `[PASS] / [FAIL]`
+
+#### 17.4.3 新增第 7 个 Jenkinsfile
+
+1. 复制最接近的模板（如 `Jenkinsfile-modules`）
+2. 改 `@Library('apex-ci-library-local@main') _` 加载方式
+3. 在 `01-seed.groovy` 里加 `createOrUpdatePipelineJob('apex-xxx', readFile('Jenkinsfile-xxx'))`
+4. 跑一次 `docker compose restart jenkins` 让 seed 重新执行
+5. 在 `README.md` / `design.md §19` / `user-guide.md §17` 中补充文档
+
+### 17.5 测试结果归档
+
+每次 `apex-modules-test` 跑完，`Summary` stage 会输出：
+
+```
+==========================================
+  APEX MODULE TEST SUMMARY: 62/62 passed, 0 failed
+==========================================
+```
+
+业务方可将此行解析为：
+
+```bash
+CONSOLE=$(curl -fsS "$JENKINS/job/apex-modules-test/lastBuild/consoleText" -u admin:admin)
+SUMMARY=$(echo "$CONSOLE" | grep "MODULE TEST SUMMARY" | tail -1)
+echo "$SUMMARY"
+# APEX MODULE TEST SUMMARY: 62/62 passed, 0 failed
+```
+
+历史跑过的累计次数见 `README.md` / `design.md §19.1` 的表格（截至 2026-06-21）。
+
+### 17.6 与 build.sh / test-it.sh 的关系
+
+| 工具 | 覆盖 | 耗时 | 何时用 |
+| --- | --- | --- | --- |
+| `mvn clean test` / `bash build.sh` | 单元 + 集成测试（MockScript） | 秒级 | 改完库代码后必跑 |
+| `bash docker/test-env/test-it.sh` | 端到端：Nexus publish + Trivy + SAST + LibraryConfig | 分钟级 | 改完 builder/scanner/publisher 后跑 |
+| 6 个 Jenkinsfile | 库 API 端到端 + 沙箱回放 | 分钟级 | 改完 vars/ 或沙箱相关代码后跑 |
+
+三者覆盖的代码层是互补的：
+- `mvn test` / `build.sh` 覆盖纯逻辑（无 Jenkins）
+- `test-it.sh` 覆盖外部系统集成（无 Jenkins 沙箱）
+- 6 个 Jenkinsfile 覆盖 CPS 沙箱下的 vars 入口
+
+### 17.7 单测对应表
+
+每个集成测试用例如有对应的 Jenkinsfile，建议在两个层面都覆盖：
+
+| 集成测试 | 真实 Jenkins |
+| --- | --- |
+| `LightweightDslTest.scanRunner_*` | `Jenkinsfile-wait-scan` |
+| `ParallelBuildTest.*` | `Jenkinsfile-parallel-build` |
+| `VersionUpgradeIntegrationTest.*` | `Jenkinsfile-version` |
+| `LibraryConfigTest.*` | `Jenkinsfile-modules` stage 1 |
+| `DynamicParamsTest.*` | `Jenkinsfile-modules` stage 2 |
+| `BuilderFactoryTest.*` | `Jenkinsfile-modules` stage 3 / 14 |
+| `EmailNotifierTest.*` | `Jenkinsfile-modules` stage 8 |
+| `RetryTest.*` | `Jenkinsfile-modules` stage 7 / 13 |
+
+---
+
 ## 附录 A：发布检查清单
 
 - [ ] `CHANGELOG.md` 已更新
@@ -1129,3 +1713,4 @@ node {
 | 全局变量 | 新建 `vars/<name>.groovy` |
 | 新 Artifact 仓库 | 新建 `artifact/XxxClient.groovy` |
 | 新 Registry | `docker/DockerRegistry.groovy` SPI |
+| 新版本规则 | 扩展 `version/VersionManager.BumpType` |

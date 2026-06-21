@@ -1,7 +1,7 @@
 # ===== Build artifacts =====
 /dist/
 /build/
-/target/
+/out/
 
 # Python
 __pycache__/
@@ -15,13 +15,16 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Java / Maven
+# ===== Java / Maven =====
 target/
 *.class
 *.jar
 *.war
 *.ear
 hs_err_pid*
+mvnw
+mvnw.cmd
+.mvn/wrapper/maven-wrapper.jar
 
 # Node / npm
 node_modules/
@@ -57,3 +60,22 @@ Desktop.ini
 cookies.txt
 crumb.json
 build*.json
+test*.json
+*.tmp
+*.bak
+*.orig
+*.rej
+.gradle/
+local.properties
+
+# ===== Jenkins workspace temp =====
+**/@tmp/
+**/@script/
+**/ws-cleanup-*/
+
+# ===== Surefire reports =====
+/test-output/
+/report/
+
+# ===== Maven local repo markers =====
+.m2/
